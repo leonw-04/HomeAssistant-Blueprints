@@ -11,6 +11,10 @@ blueprint:
     Optional kann zusätzlich last_reported als Stale-Heuristik verwendet werden.
     Diese Option nur aktivieren, wenn die verwendete Sensorintegration regelmäßig
     Zustände an Home Assistant meldet.
+
+    Ein konfigurierbarer Cooldown verhindert wiederholte Benachrichtigungen bei
+    unverändert bestehender Warnlage. Der Cooldown startet nur, wenn tatsächlich
+    mindestens eine Warnung gesendet wurde.
   domain: automation
   homeassistant:
     min_version: 2026.9.0
@@ -242,6 +246,23 @@ blueprint:
           selector:
             action: {}
 
+        cooldown_minutes:
+          name: Cooldown nach Warnung
+          description: >-
+            Nach einer tatsächlich gesendeten Warnung bleibt diese Automation für
+            die eingestellte Zeit aktiv und ignoriert weitere Trigger. Dadurch werden
+            identische Erinnerungen unterdrückt. 0 deaktiviert den Cooldown.
+            Hinweis: Der Cooldown gilt gemeinsam für kritische Fenster, reguläre
+            Fenster und fehlende Wetterdaten.
+          default: 30
+          selector:
+            number:
+              min: 0
+              max: 360
+              step: 5
+              unit_of_measurement: min
+              mode: slider
+
 triggers: !input check_triggers
 
 variables:
@@ -260,6 +281,7 @@ variables:
   regular_amount: !input regular_amount
 
   stale_minutes: !input stale_minutes
+  cooldown_minutes: !input cooldown_minutes
 
 conditions: []
 
@@ -490,6 +512,18 @@ actions:
           - condition: template
             value_template: "{{ data_problem }}"
         sequence: !input data_problem_actions
+
+  # Helper-freier Cooldown: Nur wenn in diesem Lauf wirklich eine Warnung
+  # ausgelöst wurde, bleibt die Automation für die konfigurierte Zeit aktiv.
+  # Mit mode: single werden weitere Trigger währenddessen verworfen.
+  - if:
+      - condition: template
+        value_template: >-
+          {{ (cooldown_minutes | int(0) > 0)
+             and (critical_alert or regular_alert or data_problem) }}
+    then:
+      - delay:
+          minutes: "{{ cooldown_minutes | int(0) }}"
 
 mode: single
 max_exceeded: silent
