@@ -1,27 +1,37 @@
 blueprint:
-  name: "Wetterwarnung bei offenen/unerreichbaren Fenstern"
-  description: >
-    Prüft stündliche Wettervorhersagen und meldet ausgewählte Wetterzustände,
-    wenn Fenster in einer von zwei Kategorien offen, unavailable/unknown oder
-    optional per last_changed-Heuristik veraltet sind.
-  domain: automation
+  name: "Wetterwarnung: offene / unerreichbare Fenster"
+  description: >-
+    Prüft einen stündlichen Wetter-Forecast und meldet offene oder nicht verlässlich
+    rückmeldende Fenstersensoren. Es gibt zwei Fensterkategorien: kritische Fenster
+    (z. B. Dachfenster) und reguläre Fenster. Für jede Kategorie kann unabhängig
+    gewählt werden, ob die Warnschwelle über Niederschlagswahrscheinlichkeit (%)
+    oder Niederschlagsmenge (z. B. mm pro Forecast-Stunde) bestimmt wird.
 
+    unknown/unavailable werden immer separat als unbekannter Sensorzustand gemeldet.
+    Optional kann zusätzlich last_reported als Stale-Heuristik verwendet werden.
+    Diese Option nur aktivieren, wenn die verwendete Sensorintegration regelmäßig
+    Zustände an Home Assistant meldet.
+  domain: automation
   homeassistant:
-    min_version: 2024.6.0
+    min_version: 2026.9.0
 
   input:
-    weather:
+    weather_settings:
       name: Wetter
       input:
         weather_entity:
           name: Wetter-Entität
+          description: Muss einen stündlichen Forecast unterstützen.
           selector:
             entity:
               filter:
-                domain: weather
+                - domain: weather
 
-        weather_events:
+        weather_conditions:
           name: Relevante Wetterzustände
+          description: >-
+            Nur Forecast-Einträge mit einem dieser Wetterzustände werden ausgewertet.
+            Die Schwellenwerte darunter beziehen sich auf Niederschlagsdaten.
           default:
             - rainy
             - pouring
@@ -32,143 +42,238 @@ blueprint:
             select:
               multiple: true
               options:
-                - rainy
-                - pouring
-                - lightning-rainy
-                - hail
-                - snowy-rainy
-                - snowy
-                - lightning
-                - windy
-                - windy-variant
-                - fog
-                - exceptional
+                - label: Regen
+                  value: rainy
+                - label: Starkregen
+                  value: pouring
+                - label: Gewitter mit Regen
+                  value: lightning-rainy
+                - label: Hagel
+                  value: hail
+                - label: Schneeregen
+                  value: snowy-rainy
+                - label: Schnee
+                  value: snowy
 
         forecast_hours:
-          name: Vorwarnhorizont in Stunden
-          default: 2
+          name: Vorwarnzeitraum
+          description: Wie viele Stunden des Hourly-Forecasts ausgewertet werden.
+          default: 3
           selector:
             number:
               min: 1
               max: 12
+              step: 1
+              unit_of_measurement: h
               mode: slider
 
-        missing_probability_policy:
-          name: Fehlende Niederschlagswahrscheinlichkeit
-          default: condition_only
+    critical_windows_settings:
+      name: Kritische Fenster
+      input:
+        critical_windows:
+          name: Kritische Fenster / Dachfenster
+          description: Diese Fenster sollen bei relevantem Wetter möglichst immer geschlossen sein.
+          default: []
+          selector:
+            entity:
+              multiple: true
+              filter:
+                - domain: binary_sensor
+
+        critical_threshold_type:
+          name: Schwellenart
+          default: probability
           selector:
             select:
               options:
-                - condition_only
-                - treat_as_zero
+                - label: Regenwahrscheinlichkeit (%)
+                  value: probability
+                - label: Niederschlagsmenge
+                  value: amount
 
-    windows:
-      name: Fenster
+        critical_probability:
+          name: Regenwahrscheinlichkeit
+          description: Wird nur verwendet, wenn als Schwellenart Regenwahrscheinlichkeit gewählt ist.
+          default: 25
+          selector:
+            number:
+              min: 0
+              max: 100
+              step: 5
+              unit_of_measurement: "%"
+              mode: slider
+
+        critical_amount:
+          name: Niederschlagsmenge
+          description: >-
+            Wird nur verwendet, wenn Niederschlagsmenge gewählt ist. Verglichen wird
+            der höchste Wert eines Forecast-Eintrags im Vorwarnzeitraum. Die Einheit
+            kommt von der Wetter-Entität (bei metrischer Konfiguration meist mm).
+          default: 0.2
+          selector:
+            number:
+              min: 0
+              max: 50
+              step: 0.1
+              mode: box
+
+    regular_windows_settings:
+      name: Reguläre Fenster
       input:
-        always_windows:
-          name: Immer-geschlossen
+        regular_windows:
+          name: Reguläre Fenster
+          description: Diese Fenster werden typischerweise erst bei stärkerem Regen gemeldet.
           default: []
           selector:
             entity:
               multiple: true
               filter:
-                domain: binary_sensor
+                - domain: binary_sensor
 
-        conditional_windows:
-          name: Bedingt
-          default: []
+        regular_threshold_type:
+          name: Schwellenart
+          default: amount
           selector:
-            entity:
-              multiple: true
-              filter:
-                domain: binary_sensor
+            select:
+              options:
+                - label: Regenwahrscheinlichkeit (%)
+                  value: probability
+                - label: Niederschlagsmenge
+                  value: amount
 
-        always_probability:
-          name: Schwelle Immer-geschlossen
-          default: 20
-          selector:
-            number:
-              min: 0
-              max: 100
-              unit_of_measurement: "%"
-
-        conditional_probability:
-          name: Schwelle Bedingt
-          default: 50
+        regular_probability:
+          name: Regenwahrscheinlichkeit
+          description: Wird nur verwendet, wenn als Schwellenart Regenwahrscheinlichkeit gewählt ist.
+          default: 60
           selector:
             number:
               min: 0
               max: 100
+              step: 5
               unit_of_measurement: "%"
+              mode: slider
 
+        regular_amount:
+          name: Niederschlagsmenge
+          description: >-
+            Wird nur verwendet, wenn Niederschlagsmenge gewählt ist. Verglichen wird
+            der höchste Forecast-Wert im Vorwarnzeitraum.
+          default: 1.5
+          selector:
+            number:
+              min: 0
+              max: 50
+              step: 0.1
+              mode: box
+
+    sensor_health_settings:
+      name: Sensor-Rückmeldung
+      input:
         stale_minutes:
-          name: last_changed-Heuristik in Minuten (0 = aus)
+          name: Keine Rückmeldung seit ... Minuten
+          description: >-
+            0 deaktiviert die Prüfung. Wenn größer 0, wird last_reported geprüft.
+            Nur verwenden, wenn deine Fensterintegration auch bei unverändertem
+            Fensterzustand regelmäßig an Home Assistant berichtet. Sonst entstehen
+            Fehlalarme.
           default: 0
           selector:
             number:
               min: 0
               max: 10080
+              step: 15
               unit_of_measurement: min
+              mode: box
 
-    delivery:
-      name: Trigger und Benachrichtigung
+    execution_settings:
+      name: Prüfung und Benachrichtigung
       input:
         check_triggers:
           name: Prüf-Trigger
+          description: >-
+            Standardmäßig wird alle 15 Minuten geprüft. Hier können bei Bedarf weitere
+            oder andere Trigger definiert werden.
           default:
             - trigger: time_pattern
-              minutes: "/10"
+              minutes: "/15"
           selector:
             trigger: {}
 
-        always_actions:
-          name: Aktionen für Immer-geschlossen
+        critical_actions:
+          name: Benachrichtigung für kritische Fenster
+          description: >-
+            Frei definierbare Actions. In Nachrichtentemplates steht
+            {{ critical_message }} zur Verfügung.
           default:
             - action: persistent_notification.create
               data:
-                notification_id: weather_window_always
-                title: "KRITISCH: Wetter + Fenster"
-                message: "{{ always_message }}"
+                notification_id: weather_window_critical
+                title: "⚠️ Kritisches Fenster + Wetter"
+                message: "{{ critical_message }}"
           selector:
             action: {}
 
-        conditional_actions:
-          name: Aktionen für Bedingt
+        regular_actions:
+          name: Benachrichtigung für reguläre Fenster
+          description: >-
+            Frei definierbare Actions. In Nachrichtentemplates steht
+            {{ regular_message }} zur Verfügung.
           default:
             - action: persistent_notification.create
               data:
-                notification_id: weather_window_conditional
-                title: "WARNUNG: Wetter + Fenster"
-                message: "{{ conditional_message }}"
+                notification_id: weather_window_regular
+                title: "🌧️ Fenster + stärkerer Niederschlag"
+                message: "{{ regular_message }}"
+          selector:
+            action: {}
+
+        data_problem_actions:
+          name: Benachrichtigung bei fehlenden Wetterdaten
+          description: >-
+            Wird ausgeführt, wenn ein relevantes Fensterproblem besteht, der
+            ausgewählte Forecast-Wert aber vom Wetteranbieter nicht geliefert wird.
+            In Nachrichtentemplates steht {{ data_problem_message }} zur Verfügung.
+          default:
+            - action: persistent_notification.create
+              data:
+                notification_id: weather_window_missing_forecast_data
+                title: "Wetterdaten für Fensterwarnung unvollständig"
+                message: "{{ data_problem_message }}"
           selector:
             action: {}
 
 triggers: !input check_triggers
 
+variables:
+  weather_entity: !input weather_entity
+  weather_conditions: !input weather_conditions
+  forecast_hours: !input forecast_hours
+
+  critical_windows: !input critical_windows
+  critical_threshold_type: !input critical_threshold_type
+  critical_probability: !input critical_probability
+  critical_amount: !input critical_amount
+
+  regular_windows: !input regular_windows
+  regular_threshold_type: !input regular_threshold_type
+  regular_probability: !input regular_probability
+  regular_amount: !input regular_amount
+
+  stale_minutes: !input stale_minutes
+
+conditions: []
+
 actions:
-  - variables:
-      weather_entity: !input weather_entity
-      weather_events: !input weather_events
-      forecast_hours: !input forecast_hours
-      missing_probability_policy: !input missing_probability_policy
-
-      always_windows: !input always_windows
-      conditional_windows: !input conditional_windows
-      always_probability: !input always_probability
-      conditional_probability: !input conditional_probability
-      stale_minutes: !input stale_minutes
-
-  # Ohne brauchbare Wetter-Entity lässt sich "wird es regnen?" nicht bewerten.
   - if:
       - condition: template
         value_template: "{{ not has_value(weather_entity) }}"
     then:
       - action: persistent_notification.create
         data:
-          notification_id: weather_window_weather_unavailable
+          notification_id: weather_window_weather_entity_unavailable
           title: "Wetterprüfung nicht möglich"
-          message: >
-            Die Wetter-Entität {{ weather_entity }} ist unknown/unavailable.
+          message: >-
+            Die Wetter-Entität {{ weather_entity }} ist unknown oder unavailable.
       - stop: "Wetter-Entität nicht verfügbar"
 
   - action: weather.get_forecasts
@@ -176,166 +281,215 @@ actions:
       entity_id: !input weather_entity
     data:
       type: hourly
-    response_variable: wx
+    response_variable: weather_response
 
   - variables:
-      forecast_list: >
-        {{ wx[weather_entity].forecast | default([], true) }}
+      precipitation_unit: "{{ state_attr(weather_entity, 'precipitation_unit') or 'Wetter-Einheit' }}"
+      forecast_list: >-
+        {{ weather_response[weather_entity].forecast | default([], true) }}
 
+  - variables:
+      relevant_forecast: >-
+        {% set ns = namespace(items=[]) %}
+        {% set start_ts = as_timestamp(now()) - 3600 %}
+        {% set end_ts = as_timestamp(now()) + ((forecast_hours | float(0)) * 3600) %}
+        {% for f in forecast_list %}
+          {% if f.datetime is defined and f.condition is defined %}
+            {% set ts = as_timestamp(f.datetime) %}
+            {% if ts >= start_ts and ts <= end_ts and f.condition in weather_conditions %}
+              {% set ns.items = ns.items + [f] %}
+            {% endif %}
+          {% endif %}
+        {% endfor %}
+        {{ ns.items }}
+
+      critical_open: >-
+        {% set ns = namespace(items=[]) %}
+        {% for e in critical_windows %}
+          {% if is_state(e, 'on') %}
+            {% set ns.items = ns.items + [state_attr(e, 'friendly_name') or e] %}
+          {% endif %}
+        {% endfor %}
+        {{ ns.items }}
+
+      critical_unknown: >-
+        {% set ns = namespace(items=[]) %}
+        {% for e in critical_windows %}
+          {% if states(e) in ['unknown', 'unavailable'] %}
+            {% set ns.items = ns.items + [state_attr(e, 'friendly_name') or e] %}
+          {% endif %}
+        {% endfor %}
+        {{ ns.items }}
+
+      critical_stale: >-
+        {% set ns = namespace(items=[]) %}
+        {% if stale_minutes | int(0) > 0 %}
+          {% for e in critical_windows %}
+            {% if states(e) not in ['unknown', 'unavailable'] %}
+              {% set obj = (expand(e) | list | first) | default(none) %}
+              {% if obj is not none and obj.last_reported is defined %}
+                {% set age = as_timestamp(now()) - as_timestamp(obj.last_reported) %}
+                {% if age >= ((stale_minutes | int(0)) * 60) %}
+                  {% set ns.items = ns.items + [state_attr(e, 'friendly_name') or e] %}
+                {% endif %}
+              {% endif %}
+            {% endif %}
+          {% endfor %}
+        {% endif %}
+        {{ ns.items }}
+
+      regular_open: >-
+        {% set ns = namespace(items=[]) %}
+        {% for e in regular_windows %}
+          {% if is_state(e, 'on') %}
+            {% set ns.items = ns.items + [state_attr(e, 'friendly_name') or e] %}
+          {% endif %}
+        {% endfor %}
+        {{ ns.items }}
+
+      regular_unknown: >-
+        {% set ns = namespace(items=[]) %}
+        {% for e in regular_windows %}
+          {% if states(e) in ['unknown', 'unavailable'] %}
+            {% set ns.items = ns.items + [state_attr(e, 'friendly_name') or e] %}
+          {% endif %}
+        {% endfor %}
+        {{ ns.items }}
+
+      regular_stale: >-
+        {% set ns = namespace(items=[]) %}
+        {% if stale_minutes | int(0) > 0 %}
+          {% for e in regular_windows %}
+            {% if states(e) not in ['unknown', 'unavailable'] %}
+              {% set obj = (expand(e) | list | first) | default(none) %}
+              {% if obj is not none and obj.last_reported is defined %}
+                {% set age = as_timestamp(now()) - as_timestamp(obj.last_reported) %}
+                {% if age >= ((stale_minutes | int(0)) * 60) %}
+                  {% set ns.items = ns.items + [state_attr(e, 'friendly_name') or e] %}
+                {% endif %}
+              {% endif %}
+            {% endif %}
+          {% endfor %}
+        {% endif %}
+        {{ ns.items }}
+
+  - variables:
       matched_conditions: >-
-        {% set ns = namespace(items=[]) %}
-        {% set end = now() + timedelta(hours=forecast_hours | int) %}
-        {% for f in forecast_list %}
-          {% set dt = as_datetime(f.datetime)
-             if f.datetime is defined else none %}
-          {% if dt is not none
-                and dt <= end
-                and dt >= now() - timedelta(hours=1)
-                and (f.condition | default('')) in weather_events %}
-            {% set ns.items = ns.items + [f.condition] %}
-          {% endif %}
-        {% endfor %}
-        {{ ns.items | unique | list }}
+        {{ relevant_forecast | map(attribute='condition') | unique | list }}
 
-      weather_probability: >-
-        {% set ns = namespace(p=-1) %}
-        {% set end = now() + timedelta(hours=forecast_hours | int) %}
-        {% for f in forecast_list %}
-          {% set dt = as_datetime(f.datetime)
-             if f.datetime is defined else none %}
-          {% if dt is not none
-                and dt <= end
-                and dt >= now() - timedelta(hours=1)
-                and (f.condition | default('')) in weather_events %}
-
-            {% if f.precipitation_probability is defined
-                  and f.precipitation_probability is not none %}
-              {% set ns.p =
-                   [ns.p, f.precipitation_probability | int(0)] | max %}
-            {% elif missing_probability_policy == 'condition_only' %}
-              {% set ns.p = [ns.p, 100] | max %}
-            {% else %}
-              {% set ns.p = [ns.p, 0] | max %}
+      critical_metric_values: >-
+        {% set ns = namespace(values=[]) %}
+        {% for f in relevant_forecast %}
+          {% if critical_threshold_type == 'probability' %}
+            {% if f.precipitation_probability is defined and f.precipitation_probability is not none %}
+              {% set ns.values = ns.values + [f.precipitation_probability | float(0)] %}
+            {% endif %}
+          {% else %}
+            {% if f.precipitation is defined and f.precipitation is not none %}
+              {% set ns.values = ns.values + [f.precipitation | float(0)] %}
             {% endif %}
           {% endif %}
         {% endfor %}
-        {{ ns.p }}
+        {{ ns.values }}
 
-      always_open: >-
-        {% set ns = namespace(items=[]) %}
-        {% for e in always_windows %}
-          {% if states(e) == 'on' %}
-            {% set ns.items =
-                 ns.items + [state_attr(e, 'friendly_name') or e] %}
-          {% endif %}
-        {% endfor %}
-        {{ ns.items }}
-
-      always_unavailable: >-
-        {% set ns = namespace(items=[]) %}
-        {% for e in always_windows %}
-          {% if states(e) in ['unknown', 'unavailable'] %}
-            {% set ns.items =
-                 ns.items + [state_attr(e, 'friendly_name') or e] %}
-          {% endif %}
-        {% endfor %}
-        {{ ns.items }}
-
-      always_stale: >-
-        {% set ns = namespace(items=[]) %}
-        {% if stale_minutes | int > 0 %}
-          {% for e in always_windows %}
-            {% set obj = states[e] %}
-            {% if obj is not none
-                  and states(e) not in ['unknown', 'unavailable']
-                  and (as_timestamp(now()) - as_timestamp(obj.last_changed))
-                    >= ((stale_minutes | int) * 60) %}
-              {% set ns.items =
-                   ns.items + [state_attr(e, 'friendly_name') or e] %}
+      regular_metric_values: >-
+        {% set ns = namespace(values=[]) %}
+        {% for f in relevant_forecast %}
+          {% if regular_threshold_type == 'probability' %}
+            {% if f.precipitation_probability is defined and f.precipitation_probability is not none %}
+              {% set ns.values = ns.values + [f.precipitation_probability | float(0)] %}
             {% endif %}
-          {% endfor %}
+          {% else %}
+            {% if f.precipitation is defined and f.precipitation is not none %}
+              {% set ns.values = ns.values + [f.precipitation | float(0)] %}
+            {% endif %}
+          {% endif %}
+        {% endfor %}
+        {{ ns.values }}
+
+  - variables:
+      critical_metric_available: "{{ critical_metric_values | length > 0 }}"
+      critical_metric_value: "{{ (critical_metric_values | max) if (critical_metric_values | length > 0) else none }}"
+      critical_threshold: "{{ critical_probability if critical_threshold_type == 'probability' else critical_amount }}"
+
+      regular_metric_available: "{{ regular_metric_values | length > 0 }}"
+      regular_metric_value: "{{ (regular_metric_values | max) if (regular_metric_values | length > 0) else none }}"
+      regular_threshold: "{{ regular_probability if regular_threshold_type == 'probability' else regular_amount }}"
+
+      critical_problem_count: >-
+        {{ (critical_open | length) + (critical_unknown | length) + (critical_stale | length) }}
+      regular_problem_count: >-
+        {{ (regular_open | length) + (regular_unknown | length) + (regular_stale | length) }}
+
+  - variables:
+      critical_alert: >-
+        {{ (relevant_forecast | length > 0)
+           and (critical_problem_count | int(0) > 0)
+           and critical_metric_available
+           and ((critical_metric_value | float(0)) >= (critical_threshold | float(0))) }}
+
+      regular_alert: >-
+        {{ (relevant_forecast | length > 0)
+           and (regular_problem_count | int(0) > 0)
+           and regular_metric_available
+           and ((regular_metric_value | float(0)) >= (regular_threshold | float(0))) }}
+
+      data_problem: >-
+        {{ (relevant_forecast | length > 0)
+           and (
+             ((critical_problem_count | int(0) > 0) and not critical_metric_available)
+             or
+             ((regular_problem_count | int(0) > 0) and not regular_metric_available)
+           ) }}
+
+      critical_message: >-
+        {% set metric_name = 'Regenwahrscheinlichkeit' if critical_threshold_type == 'probability' else 'Niederschlagsmenge' %}
+        {% set unit = '%' if critical_threshold_type == 'probability' else precipitation_unit %}
+        Relevantes Wetter in den nächsten {{ forecast_hours }} h: {{ matched_conditions | join(', ') }}.
+        {{ metric_name }}: max. {{ critical_metric_value }} {{ unit }} (Schwelle {{ critical_threshold }} {{ unit }}).
+        Offen: {{ critical_open | join(', ') if critical_open else '—' }}.
+        Unknown/unavailable: {{ critical_unknown | join(', ') if critical_unknown else '—' }}.
+        Keine Rückmeldung laut last_reported: {{ critical_stale | join(', ') if critical_stale else '—' }}.
+
+      regular_message: >-
+        {% set metric_name = 'Regenwahrscheinlichkeit' if regular_threshold_type == 'probability' else 'Niederschlagsmenge' %}
+        {% set unit = '%' if regular_threshold_type == 'probability' else precipitation_unit %}
+        Relevantes Wetter in den nächsten {{ forecast_hours }} h: {{ matched_conditions | join(', ') }}.
+        {{ metric_name }}: max. {{ regular_metric_value }} {{ unit }} (Schwelle {{ regular_threshold }} {{ unit }}).
+        Offen: {{ regular_open | join(', ') if regular_open else '—' }}.
+        Unknown/unavailable: {{ regular_unknown | join(', ') if regular_unknown else '—' }}.
+        Keine Rückmeldung laut last_reported: {{ regular_stale | join(', ') if regular_stale else '—' }}.
+
+      data_problem_message: >-
+        Relevantes Wetter wurde erkannt ({{ matched_conditions | join(', ') }}), aber der ausgewählte
+        Wetteranbieter liefert nicht alle benötigten Forecast-Daten.
+        {% if (critical_problem_count | int(0) > 0) and not critical_metric_available %}
+        Kritische Fenster: Für die gewählte Schwellenart "{{ critical_threshold_type }}" fehlt der Wert.
+        Betroffen/offen/unklar: {{ (critical_open + critical_unknown + critical_stale) | join(', ') }}.
         {% endif %}
-        {{ ns.items }}
-
-      conditional_open: >-
-        {% set ns = namespace(items=[]) %}
-        {% for e in conditional_windows %}
-          {% if states(e) == 'on' %}
-            {% set ns.items =
-                 ns.items + [state_attr(e, 'friendly_name') or e] %}
-          {% endif %}
-        {% endfor %}
-        {{ ns.items }}
-
-      conditional_unavailable: >-
-        {% set ns = namespace(items=[]) %}
-        {% for e in conditional_windows %}
-          {% if states(e) in ['unknown', 'unavailable'] %}
-            {% set ns.items =
-                 ns.items + [state_attr(e, 'friendly_name') or e] %}
-          {% endif %}
-        {% endfor %}
-        {{ ns.items }}
-
-      conditional_stale: >-
-        {% set ns = namespace(items=[]) %}
-        {% if stale_minutes | int > 0 %}
-          {% for e in conditional_windows %}
-            {% set obj = states[e] %}
-            {% if obj is not none
-                  and states(e) not in ['unknown', 'unavailable']
-                  and (as_timestamp(now()) - as_timestamp(obj.last_changed))
-                    >= ((stale_minutes | int) * 60) %}
-              {% set ns.items =
-                   ns.items + [state_attr(e, 'friendly_name') or e] %}
-            {% endif %}
-          {% endfor %}
+        {% if (regular_problem_count | int(0) > 0) and not regular_metric_available %}
+        Reguläre Fenster: Für die gewählte Schwellenart "{{ regular_threshold_type }}" fehlt der Wert.
+        Betroffen/offen/unklar: {{ (regular_open + regular_unknown + regular_stale) | join(', ') }}.
         {% endif %}
-        {{ ns.items }}
-
-      always_alert: >-
-        {{ (matched_conditions | length > 0)
-           and ((weather_probability | int(-1))
-                >= (always_probability | int))
-           and ((always_open | length)
-                + (always_unavailable | length)
-                + (always_stale | length) > 0) }}
-
-      conditional_alert: >-
-        {{ (matched_conditions | length > 0)
-           and ((weather_probability | int(-1))
-                >= (conditional_probability | int))
-           and ((conditional_open | length)
-                + (conditional_unavailable | length)
-                + (conditional_stale | length) > 0) }}
-
-      always_message: >-
-        Prognose {{ matched_conditions | join(', ') }}
-        in den nächsten {{ forecast_hours }} h;
-        max. Niederschlagswahrscheinlichkeit {{ weather_probability }} %.
-        Offen: {{ always_open | join(', ') or '—' }}.
-        Unerreichbar: {{ always_unavailable | join(', ') or '—' }}.
-        last_changed-veraltet: {{ always_stale | join(', ') or '—' }}.
-
-      conditional_message: >-
-        Prognose {{ matched_conditions | join(', ') }}
-        in den nächsten {{ forecast_hours }} h;
-        max. Niederschlagswahrscheinlichkeit {{ weather_probability }} %.
-        Offen: {{ conditional_open | join(', ') or '—' }}.
-        Unerreichbar: {{ conditional_unavailable | join(', ') or '—' }}.
-        last_changed-veraltet: {{ conditional_stale | join(', ') or '—' }}.
+        Der fehlende Wert wird ausdrücklich nicht als 0 interpretiert.
 
   - choose:
       - conditions:
           - condition: template
-            value_template: "{{ always_alert }}"
-        sequence: !input always_actions
+            value_template: "{{ critical_alert }}"
+        sequence: !input critical_actions
 
   - choose:
       - conditions:
           - condition: template
-            value_template: "{{ conditional_alert }}"
-        sequence: !input conditional_actions
+            value_template: "{{ regular_alert }}"
+        sequence: !input regular_actions
+
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ data_problem }}"
+        sequence: !input data_problem_actions
 
 mode: single
 max_exceeded: silent
