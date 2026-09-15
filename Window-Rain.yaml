@@ -1,0 +1,341 @@
+blueprint:
+  name: "Wetterwarnung bei offenen/unerreichbaren Fenstern"
+  description: >
+    Prüft stündliche Wettervorhersagen und meldet ausgewählte Wetterzustände,
+    wenn Fenster in einer von zwei Kategorien offen, unavailable/unknown oder
+    optional per last_changed-Heuristik veraltet sind.
+  domain: automation
+
+  homeassistant:
+    min_version: 2024.6.0
+
+  input:
+    weather:
+      name: Wetter
+      input:
+        weather_entity:
+          name: Wetter-Entität
+          selector:
+            entity:
+              filter:
+                domain: weather
+
+        weather_events:
+          name: Relevante Wetterzustände
+          default:
+            - rainy
+            - pouring
+            - lightning-rainy
+            - hail
+            - snowy-rainy
+          selector:
+            select:
+              multiple: true
+              options:
+                - rainy
+                - pouring
+                - lightning-rainy
+                - hail
+                - snowy-rainy
+                - snowy
+                - lightning
+                - windy
+                - windy-variant
+                - fog
+                - exceptional
+
+        forecast_hours:
+          name: Vorwarnhorizont in Stunden
+          default: 2
+          selector:
+            number:
+              min: 1
+              max: 12
+              mode: slider
+
+        missing_probability_policy:
+          name: Fehlende Niederschlagswahrscheinlichkeit
+          default: condition_only
+          selector:
+            select:
+              options:
+                - condition_only
+                - treat_as_zero
+
+    windows:
+      name: Fenster
+      input:
+        always_windows:
+          name: Immer-geschlossen
+          default: []
+          selector:
+            entity:
+              multiple: true
+              filter:
+                domain: binary_sensor
+
+        conditional_windows:
+          name: Bedingt
+          default: []
+          selector:
+            entity:
+              multiple: true
+              filter:
+                domain: binary_sensor
+
+        always_probability:
+          name: Schwelle Immer-geschlossen
+          default: 20
+          selector:
+            number:
+              min: 0
+              max: 100
+              unit_of_measurement: "%"
+
+        conditional_probability:
+          name: Schwelle Bedingt
+          default: 50
+          selector:
+            number:
+              min: 0
+              max: 100
+              unit_of_measurement: "%"
+
+        stale_minutes:
+          name: last_changed-Heuristik in Minuten (0 = aus)
+          default: 0
+          selector:
+            number:
+              min: 0
+              max: 10080
+              unit_of_measurement: min
+
+    delivery:
+      name: Trigger und Benachrichtigung
+      input:
+        check_triggers:
+          name: Prüf-Trigger
+          default:
+            - trigger: time_pattern
+              minutes: "/10"
+          selector:
+            trigger: {}
+
+        always_actions:
+          name: Aktionen für Immer-geschlossen
+          default:
+            - action: persistent_notification.create
+              data:
+                notification_id: weather_window_always
+                title: "KRITISCH: Wetter + Fenster"
+                message: "{{ always_message }}"
+          selector:
+            action: {}
+
+        conditional_actions:
+          name: Aktionen für Bedingt
+          default:
+            - action: persistent_notification.create
+              data:
+                notification_id: weather_window_conditional
+                title: "WARNUNG: Wetter + Fenster"
+                message: "{{ conditional_message }}"
+          selector:
+            action: {}
+
+triggers: !input check_triggers
+
+actions:
+  - variables:
+      weather_entity: !input weather_entity
+      weather_events: !input weather_events
+      forecast_hours: !input forecast_hours
+      missing_probability_policy: !input missing_probability_policy
+
+      always_windows: !input always_windows
+      conditional_windows: !input conditional_windows
+      always_probability: !input always_probability
+      conditional_probability: !input conditional_probability
+      stale_minutes: !input stale_minutes
+
+  # Ohne brauchbare Wetter-Entity lässt sich "wird es regnen?" nicht bewerten.
+  - if:
+      - condition: template
+        value_template: "{{ not has_value(weather_entity) }}"
+    then:
+      - action: persistent_notification.create
+        data:
+          notification_id: weather_window_weather_unavailable
+          title: "Wetterprüfung nicht möglich"
+          message: >
+            Die Wetter-Entität {{ weather_entity }} ist unknown/unavailable.
+      - stop: "Wetter-Entität nicht verfügbar"
+
+  - action: weather.get_forecasts
+    target:
+      entity_id: !input weather_entity
+    data:
+      type: hourly
+    response_variable: wx
+
+  - variables:
+      forecast_list: >
+        {{ wx[weather_entity].forecast | default([], true) }}
+
+      matched_conditions: >-
+        {% set ns = namespace(items=[]) %}
+        {% set end = now() + timedelta(hours=forecast_hours | int) %}
+        {% for f in forecast_list %}
+          {% set dt = as_datetime(f.datetime)
+             if f.datetime is defined else none %}
+          {% if dt is not none
+                and dt <= end
+                and dt >= now() - timedelta(hours=1)
+                and (f.condition | default('')) in weather_events %}
+            {% set ns.items = ns.items + [f.condition] %}
+          {% endif %}
+        {% endfor %}
+        {{ ns.items | unique | list }}
+
+      weather_probability: >-
+        {% set ns = namespace(p=-1) %}
+        {% set end = now() + timedelta(hours=forecast_hours | int) %}
+        {% for f in forecast_list %}
+          {% set dt = as_datetime(f.datetime)
+             if f.datetime is defined else none %}
+          {% if dt is not none
+                and dt <= end
+                and dt >= now() - timedelta(hours=1)
+                and (f.condition | default('')) in weather_events %}
+
+            {% if f.precipitation_probability is defined
+                  and f.precipitation_probability is not none %}
+              {% set ns.p =
+                   [ns.p, f.precipitation_probability | int(0)] | max %}
+            {% elif missing_probability_policy == 'condition_only' %}
+              {% set ns.p = [ns.p, 100] | max %}
+            {% else %}
+              {% set ns.p = [ns.p, 0] | max %}
+            {% endif %}
+          {% endif %}
+        {% endfor %}
+        {{ ns.p }}
+
+      always_open: >-
+        {% set ns = namespace(items=[]) %}
+        {% for e in always_windows %}
+          {% if states(e) == 'on' %}
+            {% set ns.items =
+                 ns.items + [state_attr(e, 'friendly_name') or e] %}
+          {% endif %}
+        {% endfor %}
+        {{ ns.items }}
+
+      always_unavailable: >-
+        {% set ns = namespace(items=[]) %}
+        {% for e in always_windows %}
+          {% if states(e) in ['unknown', 'unavailable'] %}
+            {% set ns.items =
+                 ns.items + [state_attr(e, 'friendly_name') or e] %}
+          {% endif %}
+        {% endfor %}
+        {{ ns.items }}
+
+      always_stale: >-
+        {% set ns = namespace(items=[]) %}
+        {% if stale_minutes | int > 0 %}
+          {% for e in always_windows %}
+            {% set obj = states[e] %}
+            {% if obj is not none
+                  and states(e) not in ['unknown', 'unavailable']
+                  and (as_timestamp(now()) - as_timestamp(obj.last_changed))
+                    >= ((stale_minutes | int) * 60) %}
+              {% set ns.items =
+                   ns.items + [state_attr(e, 'friendly_name') or e] %}
+            {% endif %}
+          {% endfor %}
+        {% endif %}
+        {{ ns.items }}
+
+      conditional_open: >-
+        {% set ns = namespace(items=[]) %}
+        {% for e in conditional_windows %}
+          {% if states(e) == 'on' %}
+            {% set ns.items =
+                 ns.items + [state_attr(e, 'friendly_name') or e] %}
+          {% endif %}
+        {% endfor %}
+        {{ ns.items }}
+
+      conditional_unavailable: >-
+        {% set ns = namespace(items=[]) %}
+        {% for e in conditional_windows %}
+          {% if states(e) in ['unknown', 'unavailable'] %}
+            {% set ns.items =
+                 ns.items + [state_attr(e, 'friendly_name') or e] %}
+          {% endif %}
+        {% endfor %}
+        {{ ns.items }}
+
+      conditional_stale: >-
+        {% set ns = namespace(items=[]) %}
+        {% if stale_minutes | int > 0 %}
+          {% for e in conditional_windows %}
+            {% set obj = states[e] %}
+            {% if obj is not none
+                  and states(e) not in ['unknown', 'unavailable']
+                  and (as_timestamp(now()) - as_timestamp(obj.last_changed))
+                    >= ((stale_minutes | int) * 60) %}
+              {% set ns.items =
+                   ns.items + [state_attr(e, 'friendly_name') or e] %}
+            {% endif %}
+          {% endfor %}
+        {% endif %}
+        {{ ns.items }}
+
+      always_alert: >-
+        {{ (matched_conditions | length > 0)
+           and ((weather_probability | int(-1))
+                >= (always_probability | int))
+           and ((always_open | length)
+                + (always_unavailable | length)
+                + (always_stale | length) > 0) }}
+
+      conditional_alert: >-
+        {{ (matched_conditions | length > 0)
+           and ((weather_probability | int(-1))
+                >= (conditional_probability | int))
+           and ((conditional_open | length)
+                + (conditional_unavailable | length)
+                + (conditional_stale | length) > 0) }}
+
+      always_message: >-
+        Prognose {{ matched_conditions | join(', ') }}
+        in den nächsten {{ forecast_hours }} h;
+        max. Niederschlagswahrscheinlichkeit {{ weather_probability }} %.
+        Offen: {{ always_open | join(', ') or '—' }}.
+        Unerreichbar: {{ always_unavailable | join(', ') or '—' }}.
+        last_changed-veraltet: {{ always_stale | join(', ') or '—' }}.
+
+      conditional_message: >-
+        Prognose {{ matched_conditions | join(', ') }}
+        in den nächsten {{ forecast_hours }} h;
+        max. Niederschlagswahrscheinlichkeit {{ weather_probability }} %.
+        Offen: {{ conditional_open | join(', ') or '—' }}.
+        Unerreichbar: {{ conditional_unavailable | join(', ') or '—' }}.
+        last_changed-veraltet: {{ conditional_stale | join(', ') or '—' }}.
+
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ always_alert }}"
+        sequence: !input always_actions
+
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ conditional_alert }}"
+        sequence: !input conditional_actions
+
+mode: single
+max_exceeded: silent
