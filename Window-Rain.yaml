@@ -12,9 +12,11 @@ blueprint:
     Diese Option nur aktivieren, wenn die verwendete Sensorintegration regelmäßig
     Zustände an Home Assistant meldet.
 
-    Ein konfigurierbarer Cooldown verhindert wiederholte Benachrichtigungen bei
-    unverändert bestehender Warnlage. Der Cooldown startet nur, wenn tatsächlich
-    mindestens eine Warnung gesendet wurde.
+    Neue Fensterzustände werden ereignisbasiert sofort geprüft. Wird während einer
+    relevanten Wetterlage ein weiteres Fenster geöffnet oder ein Sensor unknown/
+    unavailable, kann diese neue Situation den Reminder-Cooldown umgehen. Für
+    wiederholte Erinnerungen können je Fenstergruppe eigene Timer-Helper genutzt
+    werden. Dadurch blockiert ein reguläres Fenster niemals eine neue kritische Warnung.
 
     Wenn nur die kritische Warnschwelle erreicht ist, können offene reguläre Fenster
     in derselben Meldung als Empfehlung zum Schließen erscheinen. Optional kann für
@@ -24,7 +26,7 @@ blueprint:
     Die auswählbaren Kontaktsensoren werden auf Binary-Sensoren der Device Classes
     'window' und 'door' begrenzt. Optional kann je Fenstergruppe ein input_boolean-
     Helper den Warnstatus speichern. Dadurch kann nach dem Schließen der zuvor
-    beanstandeten Fenster gezielt eine Entwarnung gesendet werden.
+    beanstandeten Fenster sofort und gezielt eine Entwarnung gesendet werden.
   domain: automation
   homeassistant:
     min_version: 2026.9.0
@@ -87,7 +89,6 @@ blueprint:
         critical_windows:
           name: Kritische Fenster / Dachfenster
           description: Diese Fenster sollen bei relevantem Wetter möglichst immer geschlossen sein.
-          default: []
           selector:
             entity:
               multiple: true
@@ -140,7 +141,6 @@ blueprint:
         regular_windows:
           name: Reguläre Fenster
           description: Diese Fenster werden typischerweise erst bei stärkerem Regen gemeldet.
-          default: []
           selector:
             entity:
               multiple: true
@@ -359,15 +359,47 @@ blueprint:
           selector:
             action: {}
 
-        cooldown_minutes:
-          name: Cooldown nach Warnung
+        critical_cooldown_timer:
+          name: Cooldown-Timer – kritische Fenster (optional)
           description: >-
-            Nach einer tatsächlich gesendeten Warnung bleibt diese Automation für
-            die eingestellte Zeit aktiv und ignoriert weitere Trigger. Dadurch werden
-            identische Erinnerungen unterdrückt. 0 deaktiviert den Cooldown.
-            Hinweis: Der Cooldown gilt gemeinsam für kritische Fenster, reguläre
-            Fenster und fehlende Wetterdaten. Eine Entwarnung aus einem späteren
-            Lauf kann daher frühestens nach Ende dieses Cooldowns verarbeitet werden.
+            Optionaler Timer-Helper für Erinnerungen der kritischen Fenster. Während
+            der Timer aktiv ist, werden identische Wiederholungen unterdrückt. Eine
+            neu geöffnete Tür/ein neues Fenster oder ein neu ausgefallener Sensor
+            kann den Cooldown trotzdem umgehen. Am besten beim Timer-Helper
+            "Wiederherstellen" aktivieren.
+          default: ""
+          selector:
+            entity:
+              filter:
+                - domain: timer
+
+        critical_cooldown_minutes:
+          name: Reminder-Intervall – kritische Fenster
+          description: Dauer, mit der der kritische Cooldown-Timer nach einer Meldung gestartet wird.
+          default: 15
+          selector:
+            number:
+              min: 0
+              max: 360
+              step: 5
+              unit_of_measurement: min
+              mode: slider
+
+        regular_cooldown_timer:
+          name: Cooldown-Timer – reguläre Fenster (optional)
+          description: >-
+            Optionaler eigener Timer-Helper für reguläre Warnungen und Empfehlungen.
+            Kritische und reguläre Fenster beeinflussen sich damit beim Cooldown nicht.
+            Am besten beim Timer-Helper "Wiederherstellen" aktivieren.
+          default: ""
+          selector:
+            entity:
+              filter:
+                - domain: timer
+
+        regular_cooldown_minutes:
+          name: Reminder-Intervall – reguläre Fenster
+          description: Dauer, mit der der reguläre Cooldown-Timer nach einer Meldung gestartet wird.
           default: 30
           selector:
             number:
@@ -377,7 +409,30 @@ blueprint:
               unit_of_measurement: min
               mode: slider
 
-triggers: !input check_triggers
+        bypass_cooldown_on_new_problem:
+          name: Neue Fenster-/Sensorprobleme sofort melden
+          description: >-
+            Wenn aktiv, wird ein neu geöffnetes Fenster bzw. ein neu auf unknown oder
+            unavailable wechselnder Sensor sofort gemeldet, auch wenn der Timer-Cooldown
+            der jeweiligen Gruppe noch läuft.
+          default: true
+          selector:
+            boolean: {}
+
+triggers:
+  - triggers: !input check_triggers
+  - trigger: state
+    entity_id: !input critical_windows
+    from:
+    id: ww_critical_window_state
+  - trigger: state
+    entity_id: !input regular_windows
+    from:
+    id: ww_regular_window_state
+  - trigger: state
+    entity_id: !input weather_entity
+    from:
+    id: ww_weather_state
 
 variables:
   weather_entity: !input weather_entity
@@ -401,50 +456,43 @@ variables:
   clearance_enabled: !input clearance_enabled
   critical_alert_state_helper: !input critical_alert_state_helper
   regular_alert_state_helper: !input regular_alert_state_helper
-  cooldown_minutes: !input cooldown_minutes
+
+  critical_cooldown_timer: !input critical_cooldown_timer
+  critical_cooldown_minutes: !input critical_cooldown_minutes
+  regular_cooldown_timer: !input regular_cooldown_timer
+  regular_cooldown_minutes: !input regular_cooldown_minutes
+  bypass_cooldown_on_new_problem: !input bypass_cooldown_on_new_problem
+
+  trigger_id: >-
+    {{ trigger.id | default('') if trigger is defined else '' }}
+  trigger_entity_id: >-
+    {{ trigger.entity_id | default('') if trigger is defined else '' }}
+  trigger_from_state: >-
+    {{ trigger.from_state.state | default('') if trigger is defined and trigger.from_state is not none else '' }}
+  trigger_to_state: >-
+    {{ trigger.to_state.state | default('') if trigger is defined and trigger.to_state is not none else '' }}
+  critical_new_problem_event: >-
+    {{ trigger is defined
+       and (trigger.id | default('')) == 'ww_critical_window_state'
+       and trigger.to_state is not none
+       and trigger.to_state.state in ['on', 'unknown', 'unavailable']
+       and (trigger.from_state is none or trigger.from_state.state != trigger.to_state.state) }}
+  regular_new_problem_event: >-
+    {{ trigger is defined
+       and (trigger.id | default('')) == 'ww_regular_window_state'
+       and trigger.to_state is not none
+       and trigger.to_state.state in ['on', 'unknown', 'unavailable']
+       and (trigger.from_state is none or trigger.from_state.state != trigger.to_state.state) }}
+  triggered_window_name: >-
+    {{ (state_attr(trigger.entity_id, 'friendly_name') or trigger.entity_id)
+       if trigger is defined and trigger.entity_id is defined else '' }}
 
 conditions: []
 
 actions:
-  - if:
-      - condition: template
-        value_template: "{{ not has_value(weather_entity) }}"
-    then:
-      - action: persistent_notification.create
-        data:
-          notification_id: weather_window_weather_entity_unavailable
-          title: "Wetterprüfung nicht möglich"
-          message: >-
-            Die Wetter-Entität {{ weather_entity }} ist unknown oder unavailable.
-      - stop: "Wetter-Entität nicht verfügbar"
-
-  - action: weather.get_forecasts
-    target:
-      entity_id: !input weather_entity
-    data:
-      type: hourly
-    response_variable: weather_response
-
+  # Zuerst nur die Fenster auswerten. Dadurch kann eine Entwarnung sofort erfolgen,
+  # ohne dass sie von Wetter-Forecast oder Cooldown abhängig ist.
   - variables:
-      precipitation_unit: "{{ state_attr(weather_entity, 'precipitation_unit') or 'Wetter-Einheit' }}"
-      forecast_list: >-
-        {{ weather_response[weather_entity].forecast | default([], true) }}
-
-  - variables:
-      relevant_forecast: >-
-        {% set ns = namespace(items=[]) %}
-        {% set start_ts = as_timestamp(now()) - 3600 %}
-        {% set end_ts = as_timestamp(now()) + ((forecast_hours | float(0)) * 3600) %}
-        {% for f in forecast_list %}
-          {% if f.datetime is defined and f.condition is defined %}
-            {% set ts = as_timestamp(f.datetime) %}
-            {% if ts >= start_ts and ts <= end_ts and f.condition in weather_conditions %}
-              {% set ns.items = ns.items + [f] %}
-            {% endif %}
-          {% endif %}
-        {% endfor %}
-        {{ ns.items }}
-
       critical_open: >-
         {% set ns = namespace(items=[]) %}
         {% for e in critical_windows %}
@@ -516,6 +564,110 @@ actions:
         {{ ns.items }}
 
   - variables:
+      critical_problem_count: >-
+        {{ (critical_open | length) + (critical_unknown | length) + (critical_stale | length) }}
+      regular_problem_count: >-
+        {{ (regular_open | length) + (regular_unknown | length) + (regular_stale | length) }}
+
+      critical_clearance_now: >-
+        {{ clearance_enabled
+           and (critical_alert_state_helper | string | length > 0)
+           and is_state(critical_alert_state_helper, 'on')
+           and ((critical_open | length) + (critical_unknown | length) + (critical_stale | length) == 0) }}
+      regular_clearance_now: >-
+        {{ clearance_enabled
+           and (regular_alert_state_helper | string | length > 0)
+           and is_state(regular_alert_state_helper, 'on')
+           and ((regular_open | length) + (regular_unknown | length) + (regular_stale | length) == 0) }}
+
+  - variables:
+      clearance_message: >-
+        ✅ Entwarnung
+
+        {% if critical_clearance_now %}
+        Kritische Fenster: Alle zuvor beanstandeten Fenster sind wieder geschlossen
+        und die ausgewählten Sensoren liefern einen verlässlichen Zustand.
+        {% endif %}
+        {% if regular_clearance_now %}
+        Reguläre Fenster: Alle zuvor beanstandeten bzw. empfohlenen Fenster sind wieder
+        geschlossen und die ausgewählten Sensoren liefern einen verlässlichen Zustand.
+        {% endif %}
+
+        Die Entwarnung bezieht sich auf den Fensterstatus. Die Wetterlage kann weiterhin
+        relevant sein.
+
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ critical_clearance_now or regular_clearance_now }}"
+        sequence: !input clearance_actions
+
+  - if:
+      - condition: template
+        value_template: "{{ critical_clearance_now }}"
+    then:
+      - action: input_boolean.turn_off
+        target:
+          entity_id: "{{ critical_alert_state_helper }}"
+
+  - if:
+      - condition: template
+        value_template: "{{ regular_clearance_now }}"
+    then:
+      - action: input_boolean.turn_off
+        target:
+          entity_id: "{{ regular_alert_state_helper }}"
+
+  # Sind jetzt alle Fenster unauffällig, ist nach einer eventuellen Entwarnung nichts
+  # weiter zu tun. So wird kein Forecast unnötig abgefragt.
+  - if:
+      - condition: template
+        value_template: >-
+          {{ (critical_problem_count | int(0) == 0)
+             and (regular_problem_count | int(0) == 0) }}
+    then:
+      - stop: "Alle ausgewählten Fenster/Sensoren sind unauffällig"
+
+  - if:
+      - condition: template
+        value_template: "{{ not has_value(weather_entity) }}"
+    then:
+      - action: persistent_notification.create
+        data:
+          notification_id: weather_window_weather_entity_unavailable
+          title: "Wetterprüfung nicht möglich"
+          message: >-
+            Die Wetter-Entität {{ weather_entity }} ist unknown oder unavailable.
+            Es bestehen gleichzeitig offene oder unklare Fenster-/Sensorzustände.
+      - stop: "Wetter-Entität nicht verfügbar"
+
+  - action: weather.get_forecasts
+    target:
+      entity_id: !input weather_entity
+    data:
+      type: hourly
+    response_variable: weather_response
+
+  - variables:
+      precipitation_unit: "{{ state_attr(weather_entity, 'precipitation_unit') or 'Wetter-Einheit' }}"
+      forecast_list: >-
+        {{ weather_response[weather_entity].forecast | default([], true) }}
+
+      relevant_forecast: >-
+        {% set ns = namespace(items=[]) %}
+        {% set start_ts = as_timestamp(now()) - 3600 %}
+        {% set end_ts = as_timestamp(now()) + ((forecast_hours | float(0)) * 3600) %}
+        {% for f in forecast_list %}
+          {% if f.datetime is defined and f.condition is defined %}
+            {% set ts = as_timestamp(f.datetime) %}
+            {% if ts >= start_ts and ts <= end_ts and f.condition in weather_conditions %}
+              {% set ns.items = ns.items + [f] %}
+            {% endif %}
+          {% endif %}
+        {% endfor %}
+        {{ ns.items }}
+
+  - variables:
       matched_conditions: >-
         {{ relevant_forecast | map(attribute='condition') | unique | list }}
 
@@ -558,55 +710,94 @@ actions:
       regular_metric_value: "{{ (regular_metric_values | max) if (regular_metric_values | length > 0) else none }}"
       regular_threshold: "{{ regular_probability if regular_threshold_type == 'probability' else regular_amount }}"
       regular_prewarning_threshold: >-
-        {{ (regular_probability if regular_threshold_type == 'probability' else regular_amount)
-           | float(0) * (regular_prewarning_percent | float(80)) / 100 }}
+        {{ ((regular_probability if regular_threshold_type == 'probability' else regular_amount) | float(0))
+           * (regular_prewarning_percent | float(80)) / 100 }}
 
-      critical_problem_count: >-
-        {{ (critical_open | length) + (critical_unknown | length) + (critical_stale | length) }}
-      regular_problem_count: >-
-        {{ (regular_open | length) + (regular_unknown | length) + (regular_stale | length) }}
+      critical_cooldown_active: >-
+        {{ (critical_cooldown_timer | string | length > 0)
+           and states(critical_cooldown_timer) in ['active', 'paused'] }}
+      regular_cooldown_active: >-
+        {{ (regular_cooldown_timer | string | length > 0)
+           and states(regular_cooldown_timer) in ['active', 'paused'] }}
 
   - variables:
-      critical_alert: >-
+      critical_weather_active: >-
         {{ (relevant_forecast | length > 0)
-           and (critical_problem_count | int(0) > 0)
            and critical_metric_available
            and ((critical_metric_value | float(0)) >= (critical_threshold | float(0))) }}
-
-      regular_alert: >-
+      regular_weather_active: >-
         {{ (relevant_forecast | length > 0)
-           and (regular_problem_count | int(0) > 0)
            and regular_metric_available
            and ((regular_metric_value | float(0)) >= (regular_threshold | float(0))) }}
-
-      regular_prewarning: >-
+      regular_prewarning_weather_active: >-
         {{ regular_prewarning_enabled
-           and not critical_alert
-           and not regular_alert
            and (relevant_forecast | length > 0)
-           and (regular_open | length > 0)
            and regular_metric_available
            and ((regular_metric_value | float(0)) >= (regular_prewarning_threshold | float(0))) }}
 
-      data_problem: >-
+  - variables:
+      critical_alert: >-
+        {{ critical_weather_active and (critical_problem_count | int(0) > 0) }}
+      regular_alert: >-
+        {{ regular_weather_active and (regular_problem_count | int(0) > 0) }}
+
+      regular_recommendation_due_to_critical: >-
+        {{ recommend_regular_with_critical
+           and critical_weather_active
+           and not regular_weather_active
+           and (regular_open | length > 0) }}
+      regular_recommendation_due_to_prewarning: >-
+        {{ regular_prewarning_weather_active
+           and not regular_weather_active
+           and (regular_open | length > 0) }}
+      regular_recommendation: >-
+        {{ not regular_alert
+           and (regular_recommendation_due_to_critical or regular_recommendation_due_to_prewarning) }}
+
+      critical_data_problem: >-
         {{ (relevant_forecast | length > 0)
-           and (
-             ((critical_problem_count | int(0) > 0) and not critical_metric_available)
-             or
-             ((regular_problem_count | int(0) > 0) and not regular_metric_available)
-           ) }}
+           and (critical_problem_count | int(0) > 0)
+           and not critical_metric_available }}
+      regular_data_problem: >-
+        {{ (relevant_forecast | length > 0)
+           and (regular_problem_count | int(0) > 0)
+           and not regular_metric_available }}
+
+      critical_repeat_allowed: >-
+        {{ (critical_cooldown_minutes | int(0) <= 0)
+           or (critical_cooldown_timer | string | length == 0)
+           or not critical_cooldown_active }}
+      regular_repeat_allowed: >-
+        {{ (regular_cooldown_minutes | int(0) <= 0)
+           or (regular_cooldown_timer | string | length == 0)
+           or not regular_cooldown_active }}
+
+      critical_bypass_cooldown: >-
+        {{ bypass_cooldown_on_new_problem and critical_new_problem_event }}
+      regular_bypass_cooldown: >-
+        {{ bypass_cooldown_on_new_problem and regular_new_problem_event }}
 
   - variables:
-      critical_clearance_now: >-
-        {{ clearance_enabled
-           and (critical_alert_state_helper | string | length > 0)
-           and is_state(critical_alert_state_helper, 'on')
-           and (critical_problem_count | int(0) == 0) }}
-      regular_clearance_now: >-
-        {{ clearance_enabled
-           and (regular_alert_state_helper | string | length > 0)
-           and is_state(regular_alert_state_helper, 'on')
-           and (regular_problem_count | int(0) == 0) }}
+      critical_should_notify: >-
+        {{ critical_alert and (critical_repeat_allowed or critical_bypass_cooldown) }}
+      regular_should_notify: >-
+        {{ regular_alert and (regular_repeat_allowed or regular_bypass_cooldown) }}
+
+      regular_recommendation_should_notify: >-
+        {{ regular_recommendation
+           and (regular_repeat_allowed or regular_bypass_cooldown)
+           and (
+             not critical_alert
+             or (
+               regular_new_problem_event
+               and not critical_should_notify
+             )
+           ) }}
+
+      critical_data_problem_should_notify: >-
+        {{ critical_data_problem and (critical_repeat_allowed or critical_bypass_cooldown) }}
+      regular_data_problem_should_notify: >-
+        {{ regular_data_problem and (regular_repeat_allowed or regular_bypass_cooldown) }}
 
   - variables:
       critical_message: >-
@@ -616,6 +807,9 @@ actions:
         {% set reg_unit = '%' if regular_threshold_type == 'probability' else precipitation_unit %}
         ⚠️ Wetterwarnung für kritische Fenster
 
+        {% if critical_new_problem_event %}
+        Neu erkannt: {{ triggered_window_name }} – {% if trigger_to_state == 'on' %}geöffnet{% else %}Sensorstatus {{ trigger_to_state }}{% endif %}.
+        {% endif %}
         Relevantes Wetter in den nächsten {{ forecast_hours }} h: {{ matched_conditions | join(', ') }}.
         {{ metric_name }}: max. {{ critical_metric_value }} {{ unit }} (kritische Schwelle {{ critical_threshold }} {{ unit }}).
 
@@ -657,6 +851,9 @@ actions:
         {% set unit = '%' if regular_threshold_type == 'probability' else precipitation_unit %}
         🌧️ Warnschwelle für reguläre Fenster erreicht
 
+        {% if regular_new_problem_event %}
+        Neu erkannt: {{ triggered_window_name }} – {% if trigger_to_state == 'on' %}geöffnet{% else %}Sensorstatus {{ trigger_to_state }}{% endif %}.
+        {% endif %}
         Relevantes Wetter in den nächsten {{ forecast_hours }} h: {{ matched_conditions | join(', ') }}.
         {{ metric_name }}: max. {{ regular_metric_value }} {{ unit }} (Schwelle {{ regular_threshold }} {{ unit }}).
         {% if regular_open | length > 0 %}
@@ -672,206 +869,122 @@ actions:
         {% endif %}
 
       recommendation_message: >-
-        {% set metric_name = 'Regenwahrscheinlichkeit' if regular_threshold_type == 'probability' else 'Niederschlagsmenge' %}
-        {% set unit = '%' if regular_threshold_type == 'probability' else precipitation_unit %}
         🌦️ Vorsorgliche Empfehlung
 
+        {% if regular_new_problem_event and trigger_to_state == 'on' %}
+        Neu geöffnet: {{ triggered_window_name }}.
+        {% endif %}
+        {% if regular_recommendation_due_to_critical %}
+        Die kritische Wetterstufe ist bereits erreicht. Die strengere Warnschwelle für
+        reguläre Fenster ist noch nicht erreicht; vorsorgliches Schließen wird empfohlen.
+        {% set crit_metric_name = 'Regenwahrscheinlichkeit' if critical_threshold_type == 'probability' else 'Niederschlagsmenge' %}
+        {% set crit_unit = '%' if critical_threshold_type == 'probability' else precipitation_unit %}
+        {{ crit_metric_name }}: max. {{ critical_metric_value }} {{ crit_unit }} (kritische Schwelle {{ critical_threshold }} {{ crit_unit }}).
+        {% else %}
+        {% set metric_name = 'Regenwahrscheinlichkeit' if regular_threshold_type == 'probability' else 'Niederschlagsmenge' %}
+        {% set unit = '%' if regular_threshold_type == 'probability' else precipitation_unit %}
         Für die nächsten {{ forecast_hours }} h ist relevantes Wetter vorhergesagt ({{ matched_conditions | join(', ') }}).
         {{ metric_name }}: max. {{ regular_metric_value }} {{ unit }}.
         Die eigentliche Warnschwelle liegt bei {{ regular_threshold }} {{ unit }}; die Vorwarnung beginnt bei {{ regular_prewarning_threshold | round(2) }} {{ unit }}.
+        {% endif %}
 
-        Noch offen – vorsorglich schließen empfohlen:
+        Offen – vorsorglich schließen empfohlen:
         {% for item in regular_open %}• {{ item }}
         {% endfor %}
 
-      clearance_message: >-
-        ✅ Entwarnung
-
-        {% if critical_clearance_now %}
-        Kritische Fenster: Alle zuvor beanstandeten Fenster sind wieder geschlossen
-        und die ausgewählten Sensoren liefern einen verlässlichen Zustand.
-        {% endif %}
-        {% if regular_clearance_now %}
-        Reguläre Fenster: Alle zuvor beanstandeten Fenster sind wieder geschlossen
-        und die ausgewählten Sensoren liefern einen verlässlichen Zustand.
-        {% endif %}
-
-        Die Entwarnung bezieht sich auf den Fensterstatus. Die Wettervorhersage kann
-        weiterhin Regen oder andere ausgewählte Wetterzustände enthalten.
-
       data_problem_message: >-
-        Relevantes Wetter wurde erkannt ({{ matched_conditions | join(', ') }}), aber der ausgewählte
-        Wetteranbieter liefert nicht alle benötigten Forecast-Daten.
-        {% if (critical_problem_count | int(0) > 0) and not critical_metric_available %}
+        Wetterdaten für die Fensterprüfung sind unvollständig.
+        Relevantes Wetter wurde erkannt ({{ matched_conditions | join(', ') }}), aber der
+        ausgewählte Wetteranbieter liefert nicht alle benötigten Forecast-Daten.
+        {% if critical_data_problem %}
         Kritische Fenster: Für die gewählte Schwellenart "{{ critical_threshold_type }}" fehlt der Wert.
         Betroffen/offen/unklar: {{ (critical_open + critical_unknown + critical_stale) | join(', ') }}.
         {% endif %}
-        {% if (regular_problem_count | int(0) > 0) and not regular_metric_available %}
+        {% if regular_data_problem %}
         Reguläre Fenster: Für die gewählte Schwellenart "{{ regular_threshold_type }}" fehlt der Wert.
         Betroffen/offen/unklar: {{ (regular_open + regular_unknown + regular_stale) | join(', ') }}.
         {% endif %}
         Der fehlende Wert wird ausdrücklich nicht als 0 interpretiert.
 
-  # Entwarnung aus einem früheren Lauf. Die optionalen input_boolean-Helper
-  # speichern, ob für die jeweilige Gruppe tatsächlich eine Warnung aktiv war.
   - choose:
       - conditions:
           - condition: template
-            value_template: "{{ critical_clearance_now or regular_clearance_now }}"
-        sequence: !input clearance_actions
-
-  - if:
-      - condition: template
-        value_template: "{{ critical_clearance_now }}"
-    then:
-      - action: input_boolean.turn_off
-        target:
-          entity_id: "{{ critical_alert_state_helper }}"
-
-  - if:
-      - condition: template
-        value_template: "{{ regular_clearance_now }}"
-    then:
-      - action: input_boolean.turn_off
-        target:
-          entity_id: "{{ regular_alert_state_helper }}"
-
-  - choose:
-      - conditions:
-          - condition: template
-            value_template: "{{ critical_alert }}"
+            value_template: "{{ critical_should_notify }}"
         sequence: !input critical_actions
 
-  - if:
-      - condition: template
-        value_template: >-
-          {{ critical_alert and (critical_alert_state_helper | string | length > 0) }}
-    then:
-      - action: input_boolean.turn_on
-        target:
-          entity_id: "{{ critical_alert_state_helper }}"
-
   - choose:
       - conditions:
           - condition: template
-            value_template: "{{ regular_alert }}"
+            value_template: "{{ regular_should_notify }}"
         sequence: !input regular_actions
 
-  - if:
-      - condition: template
-        value_template: >-
-          {{ regular_alert and (regular_alert_state_helper | string | length > 0) }}
-    then:
-      - action: input_boolean.turn_on
-        target:
-          entity_id: "{{ regular_alert_state_helper }}"
-
   - choose:
       - conditions:
           - condition: template
-            value_template: "{{ regular_prewarning }}"
+            value_template: "{{ regular_recommendation_should_notify }}"
         sequence: !input recommendation_actions
 
   - choose:
       - conditions:
           - condition: template
-            value_template: "{{ data_problem }}"
+            value_template: >-
+              {{ critical_data_problem_should_notify or regular_data_problem_should_notify }}
         sequence: !input data_problem_actions
 
-  # Helper-freier Cooldown: Nur wenn in diesem Lauf wirklich eine Warnung
-  # ausgelöst wurde, bleibt die Automation für die konfigurierte Zeit aktiv.
-  # Mit mode: single werden weitere Trigger währenddessen verworfen.
+  - variables:
+      critical_notified_now: >-
+        {{ critical_should_notify or critical_data_problem_should_notify }}
+      regular_notified_now: >-
+        {{ regular_should_notify
+           or regular_recommendation_should_notify
+           or regular_data_problem_should_notify }}
+
+  # Warnstatus speichern. Dadurch ist eine spätere Entwarnung unabhängig vom Timer möglich.
   - if:
       - condition: template
         value_template: >-
-          {{ (cooldown_minutes | int(0) > 0)
-             and (critical_alert or regular_alert or regular_prewarning or data_problem) }}
+          {{ critical_notified_now and (critical_alert_state_helper | string | length > 0) }}
     then:
-      - delay:
-          minutes: "{{ cooldown_minutes | int(0) }}"
+      - action: input_boolean.turn_on
+        target:
+          entity_id: "{{ critical_alert_state_helper }}"
 
-      # Direkt nach dem Cooldown noch einmal den LIVE-Sensorzustand prüfen. So kann
-      # eine Entwarnung gesendet werden, ohne auf den nächsten Zeit-Trigger zu warten.
-      - variables:
-          critical_resolved_after_cooldown: >-
-            {% set ns = namespace(ok=true) %}
-            {% if clearance_enabled and (critical_alert_state_helper | string | length > 0) and is_state(critical_alert_state_helper, 'on') %}
-              {% for e in critical_windows %}
-                {% if states(e) != 'off' %}
-                  {% set ns.ok = false %}
-                {% elif stale_minutes | int(0) > 0 %}
-                  {% set obj = (expand(e) | list | first) | default(none) %}
-                  {% if obj is not none and obj.last_reported is defined %}
-                    {% set age = as_timestamp(now()) - as_timestamp(obj.last_reported) %}
-                    {% if age >= ((stale_minutes | int(0)) * 60) %}
-                      {% set ns.ok = false %}
-                    {% endif %}
-                  {% endif %}
-                {% endif %}
-              {% endfor %}
-              {{ ns.ok }}
-            {% else %}
-              false
-            {% endif %}
-          regular_resolved_after_cooldown: >-
-            {% set ns = namespace(ok=true) %}
-            {% if clearance_enabled and (regular_alert_state_helper | string | length > 0) and is_state(regular_alert_state_helper, 'on') %}
-              {% for e in regular_windows %}
-                {% if states(e) != 'off' %}
-                  {% set ns.ok = false %}
-                {% elif stale_minutes | int(0) > 0 %}
-                  {% set obj = (expand(e) | list | first) | default(none) %}
-                  {% if obj is not none and obj.last_reported is defined %}
-                    {% set age = as_timestamp(now()) - as_timestamp(obj.last_reported) %}
-                    {% if age >= ((stale_minutes | int(0)) * 60) %}
-                      {% set ns.ok = false %}
-                    {% endif %}
-                  {% endif %}
-                {% endif %}
-              {% endfor %}
-              {{ ns.ok }}
-            {% else %}
-              false
-            {% endif %}
+  - if:
+      - condition: template
+        value_template: >-
+          {{ regular_notified_now and (regular_alert_state_helper | string | length > 0) }}
+    then:
+      - action: input_boolean.turn_on
+        target:
+          entity_id: "{{ regular_alert_state_helper }}"
 
-      - variables:
-          clearance_message: >-
-            ✅ Entwarnung
+  # Getrennte Timer-Cooldowns. Neue Probleme dürfen diese über die Logik oben umgehen.
+  - if:
+      - condition: template
+        value_template: >-
+          {{ critical_notified_now
+             and (critical_cooldown_minutes | int(0) > 0)
+             and (critical_cooldown_timer | string | length > 0) }}
+    then:
+      - action: timer.start
+        target:
+          entity_id: "{{ critical_cooldown_timer }}"
+        data:
+          duration: "{{ (critical_cooldown_minutes | int(0)) * 60 }}"
 
-            {% if critical_resolved_after_cooldown %}
-            Kritische Fenster: Alle zuvor beanstandeten Fenster sind wieder geschlossen
-            und die ausgewählten Sensoren liefern einen verlässlichen Zustand.
-            {% endif %}
-            {% if regular_resolved_after_cooldown %}
-            Reguläre Fenster: Alle zuvor beanstandeten Fenster sind wieder geschlossen
-            und die ausgewählten Sensoren liefern einen verlässlichen Zustand.
-            {% endif %}
+  - if:
+      - condition: template
+        value_template: >-
+          {{ regular_notified_now
+             and (regular_cooldown_minutes | int(0) > 0)
+             and (regular_cooldown_timer | string | length > 0) }}
+    then:
+      - action: timer.start
+        target:
+          entity_id: "{{ regular_cooldown_timer }}"
+        data:
+          duration: "{{ (regular_cooldown_minutes | int(0)) * 60 }}"
 
-            Die Entwarnung bezieht sich auf den Fensterstatus. Die Wettervorhersage kann
-            weiterhin Regen oder andere ausgewählte Wetterzustände enthalten.
-
-      - choose:
-          - conditions:
-              - condition: template
-                value_template: >-
-                  {{ critical_resolved_after_cooldown or regular_resolved_after_cooldown }}
-            sequence: !input clearance_actions
-
-      - if:
-          - condition: template
-            value_template: "{{ critical_resolved_after_cooldown }}"
-        then:
-          - action: input_boolean.turn_off
-            target:
-              entity_id: "{{ critical_alert_state_helper }}"
-
-      - if:
-          - condition: template
-            value_template: "{{ regular_resolved_after_cooldown }}"
-        then:
-          - action: input_boolean.turn_off
-            target:
-              entity_id: "{{ regular_alert_state_helper }}"
-
-mode: single
+mode: parallel
+max: 10
 max_exceeded: silent
