@@ -15,6 +15,11 @@ blueprint:
     Ein konfigurierbarer Cooldown verhindert wiederholte Benachrichtigungen bei
     unverändert bestehender Warnlage. Der Cooldown startet nur, wenn tatsächlich
     mindestens eine Warnung gesendet wurde.
+
+    Wenn nur die kritische Warnschwelle erreicht ist, können offene reguläre Fenster
+    in derselben Meldung als Empfehlung zum Schließen erscheinen. Optional kann für
+    reguläre Fenster außerdem ein Vorwarnbereich aktiviert werden, der bereits vor
+    Erreichen der regulären Warnschwelle eine Empfehlung sendet.
   domain: automation
   homeassistant:
     min_version: 2026.9.0
@@ -170,6 +175,40 @@ blueprint:
               step: 0.1
               mode: box
 
+        recommend_regular_with_critical:
+          name: Reguläre Fenster bei kritischer Warnung empfehlen
+          description: >-
+            Wenn die kritische Schwelle erreicht ist, aber die reguläre Schwelle noch
+            nicht, werden offene reguläre Fenster in der kritischen Nachricht als
+            Empfehlung zum Schließen aufgeführt.
+          default: true
+          selector:
+            boolean: {}
+
+        regular_prewarning_enabled:
+          name: Vorwarnung für reguläre Fenster
+          description: >-
+            Optional bereits vor Erreichen der regulären Warnschwelle eine reine
+            Empfehlung senden. Die Vorwarnung wird nur für tatsächlich offene
+            reguläre Fenster erzeugt.
+          default: false
+          selector:
+            boolean: {}
+
+        regular_prewarning_percent:
+          name: Vorwarnung ab Anteil der regulären Schwelle
+          description: >-
+            Beispiel: 80 % bei einer regulären Schwelle von 60 % bedeutet eine
+            Empfehlung ab 48 %. Bei Niederschlagsmenge wird entsprechend gerechnet.
+          default: 80
+          selector:
+            number:
+              min: 10
+              max: 100
+              step: 5
+              unit_of_measurement: "%"
+              mode: slider
+
     sensor_health_settings:
       name: Sensor-Rückmeldung
       input:
@@ -231,6 +270,21 @@ blueprint:
           selector:
             action: {}
 
+        recommendation_actions:
+          name: Empfehlung für reguläre Fenster
+          description: >-
+            Wird nur verwendet, wenn die optionale Vorwarnung aktiviert ist und die
+            reguläre Warnschwelle noch nicht erreicht wurde. In Nachrichtentemplates
+            steht {{ recommendation_message }} zur Verfügung.
+          default:
+            - action: persistent_notification.create
+              data:
+                notification_id: weather_window_recommendation
+                title: "🌦️ Fenster vorsorglich schließen"
+                message: "{{ recommendation_message }}"
+          selector:
+            action: {}
+
         data_problem_actions:
           name: Benachrichtigung bei fehlenden Wetterdaten
           description: >-
@@ -279,6 +333,9 @@ variables:
   regular_threshold_type: !input regular_threshold_type
   regular_probability: !input regular_probability
   regular_amount: !input regular_amount
+  recommend_regular_with_critical: !input recommend_regular_with_critical
+  regular_prewarning_enabled: !input regular_prewarning_enabled
+  regular_prewarning_percent: !input regular_prewarning_percent
 
   stale_minutes: !input stale_minutes
   cooldown_minutes: !input cooldown_minutes
@@ -437,6 +494,9 @@ actions:
       regular_metric_available: "{{ regular_metric_values | length > 0 }}"
       regular_metric_value: "{{ (regular_metric_values | max) if (regular_metric_values | length > 0) else none }}"
       regular_threshold: "{{ regular_probability if regular_threshold_type == 'probability' else regular_amount }}"
+      regular_prewarning_threshold: >-
+        {{ (regular_probability if regular_threshold_type == 'probability' else regular_amount)
+           | float(0) * (regular_prewarning_percent | float(80)) / 100 }}
 
       critical_problem_count: >-
         {{ (critical_open | length) + (critical_unknown | length) + (critical_stale | length) }}
@@ -456,6 +516,15 @@ actions:
            and regular_metric_available
            and ((regular_metric_value | float(0)) >= (regular_threshold | float(0))) }}
 
+      regular_prewarning: >-
+        {{ regular_prewarning_enabled
+           and not critical_alert
+           and not regular_alert
+           and (relevant_forecast | length > 0)
+           and (regular_open | length > 0)
+           and regular_metric_available
+           and ((regular_metric_value | float(0)) >= (regular_prewarning_threshold | float(0))) }}
+
       data_problem: >-
         {{ (relevant_forecast | length > 0)
            and (
@@ -464,23 +533,81 @@ actions:
              ((regular_problem_count | int(0) > 0) and not regular_metric_available)
            ) }}
 
+  - variables:
       critical_message: >-
         {% set metric_name = 'Regenwahrscheinlichkeit' if critical_threshold_type == 'probability' else 'Niederschlagsmenge' %}
         {% set unit = '%' if critical_threshold_type == 'probability' else precipitation_unit %}
+        {% set reg_metric_name = 'Regenwahrscheinlichkeit' if regular_threshold_type == 'probability' else 'Niederschlagsmenge' %}
+        {% set reg_unit = '%' if regular_threshold_type == 'probability' else precipitation_unit %}
+        ⚠️ Wetterwarnung für kritische Fenster
+
         Relevantes Wetter in den nächsten {{ forecast_hours }} h: {{ matched_conditions | join(', ') }}.
-        {{ metric_name }}: max. {{ critical_metric_value }} {{ unit }} (Schwelle {{ critical_threshold }} {{ unit }}).
-        Offen: {{ critical_open | join(', ') if critical_open else '—' }}.
-        Unknown/unavailable: {{ critical_unknown | join(', ') if critical_unknown else '—' }}.
-        Keine Rückmeldung laut last_reported: {{ critical_stale | join(', ') if critical_stale else '—' }}.
+        {{ metric_name }}: max. {{ critical_metric_value }} {{ unit }} (kritische Schwelle {{ critical_threshold }} {{ unit }}).
+
+        {% if critical_open | length > 0 %}
+        Sofort schließen:
+        {% for item in critical_open %}• {{ item }}
+        {% endfor %}
+        {% endif %}
+        {% if critical_unknown | length > 0 %}
+        ⚠️ Status kritischer Sensoren nicht verfügbar:
+        {% for item in critical_unknown %}• {{ item }}
+        {% endfor %}
+        {% endif %}
+        {% if critical_stale | length > 0 %}
+        ⚠️ Keine aktuelle Rückmeldung kritischer Sensoren:
+        {% for item in critical_stale %}• {{ item }}
+        {% endfor %}
+        {% endif %}
+
+        {% if recommend_regular_with_critical and (regular_open | length > 0) and not regular_alert %}
+        Empfohlen zu schließen:
+        {% for item in regular_open %}• {{ item }}
+        {% endfor %}
+        {% if regular_metric_available %}
+        Die reguläre Warnschwelle ist noch nicht erreicht: {{ reg_metric_name }} max. {{ regular_metric_value }} {{ reg_unit }} (Warnung ab {{ regular_threshold }} {{ reg_unit }}).
+        {% else %}
+        Die reguläre Warnschwelle konnte wegen fehlender Forecast-Daten nicht ausgewertet werden.
+        {% endif %}
+        {% endif %}
+        {% if (regular_unknown | length > 0) and not regular_alert %}
+        Hinweis – Status regulärer Sensoren unbekannt/unavailable: {{ regular_unknown | join(', ') }}.
+        {% endif %}
+        {% if (regular_stale | length > 0) and not regular_alert %}
+        Hinweis – keine aktuelle Rückmeldung regulärer Sensoren: {{ regular_stale | join(', ') }}.
+        {% endif %}
 
       regular_message: >-
         {% set metric_name = 'Regenwahrscheinlichkeit' if regular_threshold_type == 'probability' else 'Niederschlagsmenge' %}
         {% set unit = '%' if regular_threshold_type == 'probability' else precipitation_unit %}
+        🌧️ Warnschwelle für reguläre Fenster erreicht
+
         Relevantes Wetter in den nächsten {{ forecast_hours }} h: {{ matched_conditions | join(', ') }}.
         {{ metric_name }}: max. {{ regular_metric_value }} {{ unit }} (Schwelle {{ regular_threshold }} {{ unit }}).
-        Offen: {{ regular_open | join(', ') if regular_open else '—' }}.
-        Unknown/unavailable: {{ regular_unknown | join(', ') if regular_unknown else '—' }}.
-        Keine Rückmeldung laut last_reported: {{ regular_stale | join(', ') if regular_stale else '—' }}.
+        {% if regular_open | length > 0 %}
+        Bitte schließen:
+        {% for item in regular_open %}• {{ item }}
+        {% endfor %}
+        {% endif %}
+        {% if regular_unknown | length > 0 %}
+        ⚠️ Status nicht verfügbar: {{ regular_unknown | join(', ') }}.
+        {% endif %}
+        {% if regular_stale | length > 0 %}
+        ⚠️ Keine aktuelle Rückmeldung: {{ regular_stale | join(', ') }}.
+        {% endif %}
+
+      recommendation_message: >-
+        {% set metric_name = 'Regenwahrscheinlichkeit' if regular_threshold_type == 'probability' else 'Niederschlagsmenge' %}
+        {% set unit = '%' if regular_threshold_type == 'probability' else precipitation_unit %}
+        🌦️ Vorsorgliche Empfehlung
+
+        Für die nächsten {{ forecast_hours }} h ist relevantes Wetter vorhergesagt ({{ matched_conditions | join(', ') }}).
+        {{ metric_name }}: max. {{ regular_metric_value }} {{ unit }}.
+        Die eigentliche Warnschwelle liegt bei {{ regular_threshold }} {{ unit }}; die Vorwarnung beginnt bei {{ regular_prewarning_threshold | round(2) }} {{ unit }}.
+
+        Noch offen – vorsorglich schließen empfohlen:
+        {% for item in regular_open %}• {{ item }}
+        {% endfor %}
 
       data_problem_message: >-
         Relevantes Wetter wurde erkannt ({{ matched_conditions | join(', ') }}), aber der ausgewählte
@@ -510,6 +637,12 @@ actions:
   - choose:
       - conditions:
           - condition: template
+            value_template: "{{ regular_prewarning }}"
+        sequence: !input recommendation_actions
+
+  - choose:
+      - conditions:
+          - condition: template
             value_template: "{{ data_problem }}"
         sequence: !input data_problem_actions
 
@@ -520,7 +653,7 @@ actions:
       - condition: template
         value_template: >-
           {{ (cooldown_minutes | int(0) > 0)
-             and (critical_alert or regular_alert or data_problem) }}
+             and (critical_alert or regular_alert or regular_prewarning or data_problem) }}
     then:
       - delay:
           minutes: "{{ cooldown_minutes | int(0) }}"
