@@ -1,0 +1,539 @@
+blueprint:
+  name: "Müllabfuhr – Haushalts-Erinnerung"
+  description: >-
+    Fasst mehrere Waste-Collection-Schedule-Sensoren pro Abholtag zusammen und
+    erinnert alle ausgewählten Handys als gemeinsamen Haushalt. Unterstützt
+    „Rausgestellt“ und „Später“, Wiederholungen bei keiner Reaktion,
+    Eskalationsstufe, Deadline, Home-Assistant-Neustarts sowie individuelle
+    Namen/Emojis. Erwartet Sensorattribute im Format YYYY-MM-DD: Müllart.
+  domain: automation
+  author: OpenAI / ChatGPT
+
+  input:
+    waste_entries:
+      name: Müllarten / Sensoren
+      description: >-
+        Über „Hinzufügen“ beliebig viele Müllarten anlegen. Pro Eintrag den
+        Waste-Collection-Schedule-Sensor wählen. Name und Emoji sind optional;
+        ohne Angaben werden sie aus dem Datumsattribut automatisch ermittelt.
+      default: []
+      selector:
+        object:
+          multiple: true
+          label_field: sensor
+          fields:
+            sensor:
+              label: Müllabfuhr-Sensor
+              required: true
+              selector:
+                entity:
+                  filter:
+                    - domain: sensor
+            name:
+              label: Eigener Anzeigename (optional)
+              required: false
+              selector:
+                text: {}
+            emoji:
+              label: Eigenes Emoji/Symbol (optional, z. B. 🟤)
+              required: false
+              selector:
+                text: {}
+
+    notify_devices:
+      name: Handys im Haushalt
+      description: >-
+        Geräte mit der offiziellen Home-Assistant-Companion-App. Alle erhalten
+        dieselbe Meldung; die erste „Rausgestellt“-Bestätigung beendet den Termin
+        für den gesamten Haushalt.
+      selector:
+        device:
+          multiple: true
+          filter:
+            - integration: mobile_app
+
+    notify_services_override:
+      name: Notify-Service-Override (optional)
+      description: >-
+        Normalerweise leer lassen. Falls ein Handy wegen eines umbenannten oder
+        doppelt benannten Mobile-App-Geräts nicht erreicht wird, hier die exakten
+        Actions angeben, z. B. notify.mobile_app_pixel_8 und
+        notify.mobile_app_iphone_max. Mehrere Werte durch Komma oder Zeilenumbruch
+        trennen. Wenn befüllt, ersetzt diese Liste die Handy-Auswahl oben.
+      default: ""
+      selector:
+        text:
+          multiline: true
+
+    pickup_time:
+      name: Angenommene Abholzeit
+      description: >-
+        Da die Waste-Collection-Sensoren nur ein Datum liefern, wird diese Uhrzeit
+        für die Berechnung des Vorlaufs und der Deadline verwendet.
+      default: "06:00:00"
+      selector:
+        time: {}
+
+    lead_hours:
+      name: Erste Erinnerung – Stunden vorher
+      default: 12
+      selector:
+        number:
+          min: 1
+          max: 72
+          step: 1
+          unit_of_measurement: h
+          mode: box
+
+    no_response_minutes:
+      name: Wiederholung ohne Antwort
+      description: Nach so vielen Minuten erneut erinnern, wenn niemand reagiert.
+      default: 60
+      selector:
+        number:
+          min: 10
+          max: 720
+          step: 5
+          unit_of_measurement: min
+          mode: box
+
+    snooze_minutes:
+      name: „Später“ – Dauer
+      description: Nach so vielen Minuten erneut erinnern, wenn „Später“ gedrückt wurde.
+      default: 120
+      selector:
+        number:
+          min: 10
+          max: 720
+          step: 5
+          unit_of_measurement: min
+          mode: box
+
+    escalation_from_notification:
+      name: Eskalation ab Benachrichtigung Nr.
+      description: >-
+        Ab dieser Nummer wird der Titel deutlicher („noch nicht bestätigt“).
+        Beispiel 3 = erste Meldung + eine normale Wiederholung, danach Eskalation.
+      default: 3
+      selector:
+        number:
+          min: 2
+          max: 20
+          step: 1
+          mode: box
+
+    max_notifications:
+      name: Maximale Benachrichtigungen pro Abholtermin
+      description: Verhindert endlose Wiederholungen zusätzlich zur Deadline.
+      default: 6
+      selector:
+        number:
+          min: 1
+          max: 30
+          step: 1
+          mode: box
+
+    deadline_minutes_after_pickup:
+      name: Deadline nach Abholzeit
+      description: >-
+        Nach dieser Anzahl Minuten nach der angenommenen Abholzeit werden keine
+        weiteren Erinnerungen gesendet. 0 = exakt zur Abholzeit Schluss.
+      default: 0
+      selector:
+        number:
+          min: 0
+          max: 360
+          step: 5
+          unit_of_measurement: min
+          mode: box
+
+    instance_id:
+      name: Eindeutige Haushalts-ID
+      description: >-
+        Kurzer eindeutiger Name, falls der Blueprint mehrfach verwendet wird,
+        z. B. zuhause oder eltern. Nur Buchstaben/Zahlen sind ideal.
+      default: zuhause
+      selector:
+        text: {}
+
+    helper_active_date:
+      name: Helper – aktiver Abholtermin
+      description: input_text-Helper für das aktive Datum.
+      selector:
+        entity:
+          filter:
+            - domain: input_text
+
+    helper_done_date:
+      name: Helper – erledigter Abholtermin
+      description: input_text-Helper für das zuletzt bestätigte Datum.
+      selector:
+        entity:
+          filter:
+            - domain: input_text
+
+    helper_next_reminder:
+      name: Helper – nächste Erinnerung
+      description: input_datetime-Helper MIT Datum und Uhrzeit.
+      selector:
+        entity:
+          filter:
+            - domain: input_datetime
+
+    helper_reminder_count:
+      name: Helper – Erinnerungszähler
+      description: input_number-Helper, empfohlen 0 bis mindestens 30, Schritt 1.
+      selector:
+        entity:
+          filter:
+            - domain: input_number
+
+mode: queued
+max: 20
+max_exceeded: silent
+
+variables:
+  waste_entries: !input waste_entries
+  notify_devices: !input notify_devices
+  notify_services_override: !input notify_services_override
+  pickup_time: !input pickup_time
+  lead_hours: !input lead_hours
+  no_response_minutes: !input no_response_minutes
+  snooze_minutes: !input snooze_minutes
+  escalation_from_notification: !input escalation_from_notification
+  max_notifications: !input max_notifications
+  deadline_minutes_after_pickup: !input deadline_minutes_after_pickup
+  instance_id: !input instance_id
+  helper_active_date_var: !input helper_active_date
+  helper_done_date_var: !input helper_done_date
+  helper_next_reminder_var: !input helper_next_reminder
+  helper_reminder_count_var: !input helper_reminder_count
+
+trigger:
+  - platform: time_pattern
+    minutes: "/5"
+    id: tick
+
+  - platform: homeassistant
+    event: start
+    id: startup
+
+  - platform: event
+    event_type: mobile_app_notification_action
+    id: mobile_action
+
+action:
+  # Give integrations/helpers a moment to restore after a Home Assistant restart.
+  - choose:
+      - conditions: "{{ trigger.id == 'startup' }}"
+        sequence:
+          - delay: "00:00:15"
+
+  # Resolve notification actions. The normal path derives the legacy
+  # notify.mobile_app_* action from each selected Companion-App device.
+  - variables:
+      notify_services_json: >-
+        {% set override = notify_services_override | string | trim %}
+        {% set ns = namespace(services=[]) %}
+        {% if override != '' %}
+          {% set raw = override | replace('\n', ',') %}
+          {% for item in raw.split(',') %}
+            {% set svc = item | trim %}
+            {% if svc != '' %}
+              {% if not svc.startswith('notify.') %}
+                {% set svc = 'notify.' ~ svc %}
+              {% endif %}
+              {% set ns.services = ns.services + [svc] %}
+            {% endif %}
+          {% endfor %}
+        {% else %}
+          {% for dev in notify_devices %}
+            {% set original_name = device_attr(dev, 'name') %}
+            {% if original_name %}
+              {% set ns.services = ns.services + ['notify.mobile_app_' ~ (original_name | slugify)] %}
+            {% endif %}
+          {% endfor %}
+        {% endif %}
+        {{ ns.services | unique | list | to_json }}
+
+      active_date: >-
+        {% set value = states(helper_active_date_var) | trim %}
+        {{ '' if value in ['', '-', 'unknown', 'unavailable', 'none', 'None'] else value }}
+
+      done_date: >-
+        {% set value = states(helper_done_date_var) | trim %}
+        {{ '' if value in ['', '-', 'unknown', 'unavailable', 'none', 'None'] else value }}
+
+      current_count: "{{ states(helper_reminder_count_var) | int(0) }}"
+      instance_slug: "{{ instance_id | slugify }}"
+      active_tag: "{{ 'waste_' ~ instance_slug ~ '_' ~ (active_date | replace('-', '')) }}"
+      action_done: "{{ 'WASTE_' ~ (instance_slug | upper) ~ '_DONE_' ~ (active_date | replace('-', '')) }}"
+      action_later: "{{ 'WASTE_' ~ (instance_slug | upper) ~ '_LATER_' ~ (active_date | replace('-', '')) }}"
+      pressed_action: >-
+        {{ trigger.event.data.action | default('') if trigger.id == 'mobile_action' else '' }}
+
+  # Handle actionable-notification responses first. One phone controls the whole household.
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: >-
+              {{ trigger.id == 'mobile_action' and active_date != '' and pressed_action == action_done }}
+        sequence:
+          - service: input_text.set_value
+            target:
+              entity_id: !input helper_done_date
+            data:
+              value: "{{ active_date }}"
+
+          - service: input_text.set_value
+            target:
+              entity_id: !input helper_active_date
+            data:
+              value: "-"
+
+          - service: input_number.set_value
+            target:
+              entity_id: !input helper_reminder_count
+            data:
+              value: 0
+
+          - repeat:
+              for_each: "{{ notify_services_json | from_json }}"
+              sequence:
+                - continue_on_error: true
+                  service: "{{ repeat.item }}"
+                  data:
+                    message: clear_notification
+                    data:
+                      tag: "{{ active_tag }}"
+
+          - stop: "Müllabholtermin wurde als rausgestellt bestätigt."
+
+      - conditions:
+          - condition: template
+            value_template: >-
+              {{ trigger.id == 'mobile_action' and active_date != '' and pressed_action == action_later }}
+        sequence:
+          - service: input_datetime.set_datetime
+            target:
+              entity_id: !input helper_next_reminder
+            data:
+              timestamp: "{{ as_timestamp(now()) + (snooze_minutes | int(120) * 60) }}"
+
+          - repeat:
+              for_each: "{{ notify_services_json | from_json }}"
+              sequence:
+                - continue_on_error: true
+                  service: "{{ repeat.item }}"
+                  data:
+                    message: clear_notification
+                    data:
+                      tag: "{{ active_tag }}"
+
+          - stop: "Müllerinnerung wurde auf später gesetzt."
+
+      - conditions:
+          - condition: template
+            value_template: "{{ trigger.id == 'mobile_action' }}"
+        sequence:
+          - stop: "Andere Mobile-App-Aktion; für diesen Blueprint nicht relevant."
+
+  # Find the earliest collection date whose reminder window is currently active.
+  # Every selected sensor may contribute one item to the same date.
+  - variables:
+      candidate_date: >-
+        {% set now_ts = as_timestamp(now()) %}
+        {% set lead_s = (lead_hours | float(12)) * 3600 %}
+        {% set deadline_s = (deadline_minutes_after_pickup | float(0)) * 60 %}
+        {% set ns = namespace(dates=[]) %}
+        {% for entry in waste_entries %}
+          {% set ent = entry.get('sensor', '') %}
+          {% set expanded = expand(ent) if ent != '' else [] %}
+          {% if expanded | count > 0 %}
+            {% set st = expanded[0] %}
+            {% for key, value in st.attributes.items() %}
+              {% set key_s = key | string %}
+              {% if key_s | length == 10 and key_s[4:5] == '-' and key_s[7:8] == '-' %}
+                {% set pickup_dt = as_datetime(key_s ~ 'T' ~ pickup_time, none) %}
+                {% if pickup_dt is not none %}
+                  {% set pickup_ts = as_timestamp(pickup_dt) %}
+                  {% if key_s != done_date and now_ts >= (pickup_ts - lead_s) and now_ts <= (pickup_ts + deadline_s) %}
+                    {% set ns.dates = ns.dates + [key_s] %}
+                  {% endif %}
+                {% endif %}
+              {% endif %}
+            {% endfor %}
+          {% endif %}
+        {% endfor %}
+        {% set dates = ns.dates | unique | sort | list %}
+        {{ dates[0] if dates | count > 0 else '' }}
+
+  # If an old active collection expired or there is currently nothing to do,
+  # clear stale phone notifications and reset the active marker.
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ candidate_date == '' }}"
+        sequence:
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: "{{ active_date != '' }}"
+                sequence:
+                  - repeat:
+                      for_each: "{{ notify_services_json | from_json }}"
+                      sequence:
+                        - continue_on_error: true
+                          service: "{{ repeat.item }}"
+                          data:
+                            message: clear_notification
+                            data:
+                              tag: "{{ active_tag }}"
+                  - service: input_text.set_value
+                    target:
+                      entity_id: !input helper_active_date
+                    data:
+                      value: "-"
+                  - service: input_number.set_value
+                    target:
+                      entity_id: !input helper_reminder_count
+                    data:
+                      value: 0
+          - stop: "Aktuell liegt kein fälliger Müllabholtermin im Erinnerungsfenster."
+
+  # A new collection date starts its own household reminder state.
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ candidate_date != active_date }}"
+        sequence:
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: "{{ active_date != '' }}"
+                sequence:
+                  - repeat:
+                      for_each: "{{ notify_services_json | from_json }}"
+                      sequence:
+                        - continue_on_error: true
+                          service: "{{ repeat.item }}"
+                          data:
+                            message: clear_notification
+                            data:
+                              tag: "{{ active_tag }}"
+          - service: input_text.set_value
+            target:
+              entity_id: !input helper_active_date
+            data:
+              value: "{{ candidate_date }}"
+          - service: input_number.set_value
+            target:
+              entity_id: !input helper_reminder_count
+            data:
+              value: 0
+          - service: input_datetime.set_datetime
+            target:
+              entity_id: !input helper_next_reminder
+            data:
+              timestamp: "{{ as_timestamp(now()) }}"
+
+  # Re-read/evaluate effective state. A newly discovered date should notify immediately.
+  - variables:
+      effective_date: "{{ candidate_date }}"
+      effective_count: "{{ 0 if candidate_date != active_date else current_count }}"
+      effective_next_ts: >-
+        {% if candidate_date != active_date %}
+          {{ as_timestamp(now()) }}
+        {% else %}
+          {{ as_timestamp(states(helper_next_reminder_var), 0) }}
+        {% endif %}
+      now_ts: "{{ as_timestamp(now()) }}"
+      next_count: "{{ (effective_count | int(0)) + 1 }}"
+      escalated: "{{ (next_count | int(1)) >= (escalation_from_notification | int(3)) }}"
+      notification_tag: "{{ 'waste_' ~ instance_slug ~ '_' ~ (effective_date | replace('-', '')) }}"
+      done_action_effective: "{{ 'WASTE_' ~ (instance_slug | upper) ~ '_DONE_' ~ (effective_date | replace('-', '')) }}"
+      later_action_effective: "{{ 'WASTE_' ~ (instance_slug | upper) ~ '_LATER_' ~ (effective_date | replace('-', '')) }}"
+
+      notification_title: >-
+        {% set collection_day = as_datetime(effective_date).date() %}
+        {% set days = (collection_day - now().date()).days %}
+        {% if escalated | bool %}
+          ⚠️ Mülltonnen noch nicht bestätigt
+        {% elif days == 0 %}
+          🗑️ Müllabfuhr heute
+        {% elif days == 1 %}
+          🗑️ Müllabfuhr morgen
+        {% else %}
+          🗑️ Müllabfuhr am {{ as_datetime(effective_date).strftime('%d.%m.%Y') }}
+        {% endif %}
+
+      notification_message: >-
+        {% set ns = namespace(labels=[]) %}
+        {% for entry in waste_entries %}
+          {% set ent = entry.get('sensor', '') %}
+          {% set expanded = expand(ent) if ent != '' else [] %}
+          {% if expanded | count > 0 %}
+            {% set st = expanded[0] %}
+            {% set raw = st.attributes.get(effective_date) %}
+            {% if raw is not none %}
+              {% set custom_name = (entry.get('name') or '') | string | trim %}
+              {% set name = custom_name if custom_name != '' else (raw | string | trim) %}
+              {% set custom_emoji = (entry.get('emoji') or '') | string | trim %}
+              {% if custom_emoji != '' %}
+                {% set emoji = custom_emoji %}
+              {% else %}
+                {% set lname = name | lower %}
+                {% if 'bio' in lname %}{% set emoji = '🟤' %}
+                {% elif 'rest' in lname %}{% set emoji = '⚫' %}
+                {% elif 'papier' in lname or 'pappe' in lname %}{% set emoji = '🔵' %}
+                {% elif 'gelb' in lname or 'wertstoff' in lname %}{% set emoji = '🟡' %}
+                {% elif 'glas' in lname %}{% set emoji = '🟢' %}
+                {% elif 'sperr' in lname %}{% set emoji = '🛋️' %}
+                {% elif 'grün' in lname or 'gruen' in lname or 'garten' in lname %}{% set emoji = '🟢' %}
+                {% else %}{% set emoji = '🗑️' %}
+                {% endif %}
+              {% endif %}
+              {% set ns.labels = ns.labels + [emoji ~ ' ' ~ name] %}
+            {% endif %}
+          {% endif %}
+        {% endfor %}
+        {% if escalated | bool %}Noch nicht bestätigt – bitte prüfen.\n\n{% endif %}Bitte rausstellen:
+        {{ ns.labels | unique | join('\n') }}
+
+  # No-response repeat is based on the persistent input_datetime, not a long wait.
+  - condition: template
+    value_template: >-
+      {{ (now_ts | float(0)) >= (effective_next_ts | float(0))
+         and (effective_count | int(0)) < (max_notifications | int(6))
+         and (notify_services_json | from_json | count) > 0 }}
+
+  # Send to every household phone. Same tag replaces the previous reminder.
+  - repeat:
+      for_each: "{{ notify_services_json | from_json }}"
+      sequence:
+        - continue_on_error: true
+          service: "{{ repeat.item }}"
+          data:
+            title: "{{ notification_title }}"
+            message: "{{ notification_message }}"
+            data:
+              tag: "{{ notification_tag }}"
+              group: "{{ 'waste_' ~ instance_slug }}"
+              actions:
+                - action: "{{ done_action_effective }}"
+                  title: "✅ Rausgestellt"
+                - action: "{{ later_action_effective }}"
+                  title: "⏰ Später"
+
+  # Persist state for no-response retries and for Home Assistant restarts.
+  - service: input_number.set_value
+    target:
+      entity_id: !input helper_reminder_count
+    data:
+      value: "{{ next_count }}"
+
+  - service: input_datetime.set_datetime
+    target:
+      entity_id: !input helper_next_reminder
+    data:
+      timestamp: "{{ as_timestamp(now()) + (no_response_minutes | int(60) * 60) }}"
