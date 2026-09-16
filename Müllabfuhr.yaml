@@ -5,7 +5,9 @@ blueprint:
     erinnert alle ausgewählten Handys als gemeinsamen Haushalt. Unterstützt
     „Rausgestellt“ und „Später“, Wiederholungen bei keiner Reaktion,
     Eskalationsstufe, Deadline, Home-Assistant-Neustarts sowie individuelle
-    Namen/Emojis. Erwartet Sensorattribute im Format YYYY-MM-DD: Müllart.
+    Namen/Emojis sowie getrennt einstellbare Benachrichtigungs-Prioritäten und
+    Kanäle für normale und eskalierte Erinnerungen. Erwartet Sensorattribute im
+    Format YYYY-MM-DD: Müllart.
   domain: automation
   author: OpenAI / ChatGPT
 
@@ -64,6 +66,201 @@ blueprint:
       selector:
         text:
           multiline: true
+
+    normal_notification_priority:
+      name: "Benachrichtigung – Android-Priorität"
+      description: >-
+        Priorität für normale Erinnerungen. "Hoch" zusammen mit TTL 0 sorgt
+        auf Android für eine möglichst sofortige Zustellung.
+      default: high
+      selector:
+        select:
+          mode: dropdown
+          options:
+            - label: Normal
+              value: normal
+            - label: Hoch
+              value: high
+
+    normal_notification_ttl:
+      name: "Benachrichtigung – Android TTL"
+      description: >-
+        Time-to-live in Sekunden. 0 ist für zeitnahe Erinnerungen sinnvoll und
+        wird zusammen mit hoher Priorität sofort zugestellt oder verworfen.
+      default: 0
+      selector:
+        number:
+          min: 0
+          max: 86400
+          step: 60
+          unit_of_measurement: s
+          mode: box
+
+    normal_notification_channel:
+      name: "Benachrichtigung – Android-Kanal"
+      description: >-
+        Eigener Android-Benachrichtigungskanal. Über die Android-Systemeinstellungen
+        kann dafür zusätzlich Ton, Vibration und Nicht-stören-Verhalten angepasst werden.
+      default: "Müllabfuhr"
+      selector:
+        text: {}
+
+    normal_notification_importance:
+      name: "Benachrichtigung – Android-Kanal-Wichtigkeit"
+      description: >-
+        Wichtigkeit des Android-Kanals. Bei Android 8+ wird diese Eigenschaft beim
+        ersten Anlegen eines Kanals weitgehend festgelegt.
+      default: high
+      selector:
+        select:
+          mode: dropdown
+          options:
+            - label: Minimal
+              value: min
+            - label: Niedrig
+              value: low
+            - label: Standard
+              value: default
+            - label: Hoch
+              value: high
+            - label: Maximum
+              value: max
+
+    normal_notification_sticky:
+      name: "Benachrichtigung – Sticky"
+      description: Bleibt beim Antippen der Meldung bestehen, bis sie gezielt entfernt wird.
+      default: true
+      selector:
+        boolean: {}
+
+    normal_notification_persistent:
+      name: "Benachrichtigung – Nicht wegwischbar (Android)"
+      description: >-
+        Macht die normale Erinnerung auf Android persistent. Sie wird weiterhin
+        entfernt, sobald "Rausgestellt" oder "Später" gewählt wird.
+      default: false
+      selector:
+        boolean: {}
+
+    normal_ios_interruption_level:
+      name: "Benachrichtigung – iPhone Unterbrechungsstufe"
+      description: >-
+        Active = normal. Time-sensitive kann einen Fokus durchbrechen. Critical kann
+        auch Lautlos/Nicht stören durchbrechen, benötigt aber die entsprechende iOS-Freigabe.
+      default: active
+      selector:
+        select:
+          mode: dropdown
+          options:
+            - label: Passiv
+              value: passive
+            - label: Aktiv / normal
+              value: active
+            - label: Zeitkritisch
+              value: time-sensitive
+            - label: Kritisch
+              value: critical
+
+    normal_ios_sound:
+      name: "Benachrichtigung – iPhone Ton"
+      description: >-
+        "default" für den Standardton, "none" für lautlos oder ein in der
+        Companion-App vorhandener Sound-Dateiname.
+      default: default
+      selector:
+        text: {}
+
+    escalation_notification_priority:
+      name: "Eskalation – Android-Priorität"
+      default: high
+      selector:
+        select:
+          mode: dropdown
+          options:
+            - label: Normal
+              value: normal
+            - label: Hoch
+              value: high
+
+    escalation_notification_ttl:
+      name: "Eskalation – Android TTL"
+      default: 0
+      selector:
+        number:
+          min: 0
+          max: 86400
+          step: 60
+          unit_of_measurement: s
+          mode: box
+
+    escalation_notification_channel:
+      name: "Eskalation – Android-Kanal"
+      description: >-
+        Ein separater Kanal erlaubt auf Android andere Ton-, Vibrations- und
+        Nicht-stören-Einstellungen als bei normalen Erinnerungen.
+      default: "Müllabfuhr Dringend"
+      selector:
+        text: {}
+
+    escalation_notification_importance:
+      name: "Eskalation – Android-Kanal-Wichtigkeit"
+      default: max
+      selector:
+        select:
+          mode: dropdown
+          options:
+            - label: Minimal
+              value: min
+            - label: Niedrig
+              value: low
+            - label: Standard
+              value: default
+            - label: Hoch
+              value: high
+            - label: Maximum
+              value: max
+
+    escalation_notification_sticky:
+      name: "Eskalation – Sticky"
+      default: true
+      selector:
+        boolean: {}
+
+    escalation_notification_persistent:
+      name: "Eskalation – Nicht wegwischbar (Android)"
+      description: >-
+        Macht Eskalationsmeldungen auf Android persistent, bis eine Aktion gewählt
+        oder die Meldung vom Blueprint entfernt wird.
+      default: true
+      selector:
+        boolean: {}
+
+    escalation_ios_interruption_level:
+      name: "Eskalation – iPhone Unterbrechungsstufe"
+      description: >-
+        Für eine auffälligere Eskalation eignet sich "Zeitkritisch". "Kritisch"
+        sollte nur bewusst eingesetzt werden.
+      default: time-sensitive
+      selector:
+        select:
+          mode: dropdown
+          options:
+            - label: Passiv
+              value: passive
+            - label: Aktiv / normal
+              value: active
+            - label: Zeitkritisch
+              value: time-sensitive
+            - label: Kritisch
+              value: critical
+
+    escalation_ios_sound:
+      name: "Eskalation – iPhone Ton"
+      description: >-
+        "default", "none" oder ein in der Companion-App vorhandener Sound-Dateiname.
+      default: default
+      selector:
+        text: {}
 
     pickup_time:
       name: Angenommene Abholzeit
@@ -196,6 +393,22 @@ variables:
   waste_entries: !input waste_entries
   notify_devices: !input notify_devices
   notify_services_override: !input notify_services_override
+  normal_notification_priority: !input normal_notification_priority
+  normal_notification_ttl: !input normal_notification_ttl
+  normal_notification_channel: !input normal_notification_channel
+  normal_notification_importance: !input normal_notification_importance
+  normal_notification_sticky: !input normal_notification_sticky
+  normal_notification_persistent: !input normal_notification_persistent
+  normal_ios_interruption_level: !input normal_ios_interruption_level
+  normal_ios_sound: !input normal_ios_sound
+  escalation_notification_priority: !input escalation_notification_priority
+  escalation_notification_ttl: !input escalation_notification_ttl
+  escalation_notification_channel: !input escalation_notification_channel
+  escalation_notification_importance: !input escalation_notification_importance
+  escalation_notification_sticky: !input escalation_notification_sticky
+  escalation_notification_persistent: !input escalation_notification_persistent
+  escalation_ios_interruption_level: !input escalation_ios_interruption_level
+  escalation_ios_sound: !input escalation_ios_sound
   pickup_time: !input pickup_time
   lead_hours: !input lead_hours
   no_response_minutes: !input no_response_minutes
@@ -508,22 +721,58 @@ action:
          and (notify_services_json | from_json | count) > 0 }}
 
   # Send to every household phone. Same tag replaces the previous reminder.
+  # Normal and escalation notifications have independently configurable delivery settings.
   - repeat:
       for_each: "{{ notify_services_json | from_json }}"
       sequence:
-        - continue_on_error: true
-          service: "{{ repeat.item }}"
-          data:
-            title: "{{ notification_title }}"
-            message: "{{ notification_message }}"
-            data:
-              tag: "{{ notification_tag }}"
-              group: "{{ 'waste_' ~ instance_slug }}"
-              actions:
-                - action: "{{ done_action_effective }}"
-                  title: "✅ Rausgestellt"
-                - action: "{{ later_action_effective }}"
-                  title: "⏰ Später"
+        - choose:
+            - conditions: "{{ escalated | bool }}"
+              sequence:
+                - continue_on_error: true
+                  service: "{{ repeat.item }}"
+                  data:
+                    title: "{{ notification_title }}"
+                    message: "{{ notification_message }}"
+                    data:
+                      tag: "{{ notification_tag }}"
+                      group: "{{ 'waste_' ~ instance_slug }}"
+                      ttl: "{{ escalation_notification_ttl | int(0) }}"
+                      priority: "{{ escalation_notification_priority }}"
+                      channel: "{{ escalation_notification_channel }}"
+                      importance: "{{ escalation_notification_importance }}"
+                      sticky: "{{ 'true' if escalation_notification_sticky else 'false' }}"
+                      persistent: "{{ escalation_notification_persistent | bool }}"
+                      push:
+                        interruption-level: "{{ escalation_ios_interruption_level }}"
+                        sound: "{{ escalation_ios_sound }}"
+                      actions:
+                        - action: "{{ done_action_effective }}"
+                          title: "✅ Rausgestellt"
+                        - action: "{{ later_action_effective }}"
+                          title: "⏰ Später"
+          default:
+            - continue_on_error: true
+              service: "{{ repeat.item }}"
+              data:
+                title: "{{ notification_title }}"
+                message: "{{ notification_message }}"
+                data:
+                  tag: "{{ notification_tag }}"
+                  group: "{{ 'waste_' ~ instance_slug }}"
+                  ttl: "{{ normal_notification_ttl | int(0) }}"
+                  priority: "{{ normal_notification_priority }}"
+                  channel: "{{ normal_notification_channel }}"
+                  importance: "{{ normal_notification_importance }}"
+                  sticky: "{{ 'true' if normal_notification_sticky else 'false' }}"
+                  persistent: "{{ normal_notification_persistent | bool }}"
+                  push:
+                    interruption-level: "{{ normal_ios_interruption_level }}"
+                    sound: "{{ normal_ios_sound }}"
+                  actions:
+                    - action: "{{ done_action_effective }}"
+                      title: "✅ Rausgestellt"
+                    - action: "{{ later_action_effective }}"
+                      title: "⏰ Später"
 
   # Persist state for no-response retries and for Home Assistant restarts.
   - service: input_number.set_value
