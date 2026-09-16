@@ -1,11 +1,22 @@
 blueprint:
-  name: "Wetterwarnung: offene / unerreichbare Fenster"
+  name: "Wetterwarnung: offene / unerreichbare Fenster v0.7"
   description: >-
-    Prüft einen stündlichen Wetter-Forecast und meldet offene oder nicht verlässlich
-    rückmeldende Fenstersensoren. Es gibt zwei Fensterkategorien: kritische Fenster
-    (z. B. Dachfenster) und reguläre Fenster. Für jede Kategorie kann unabhängig
-    gewählt werden, ob die Warnschwelle über Niederschlagswahrscheinlichkeit (%)
-    oder Niederschlagsmenge (z. B. mm pro Forecast-Stunde) bestimmt wird.
+    Prüft aktuellen Wetterzustand und stündlichen Wetter-Forecast und meldet offene
+    oder nicht verlässlich rückmeldende Fenstersensoren. Es gibt zwei Fensterkategorien:
+    kritische Fenster (z. B. Dachfenster) und reguläre Fenster. Für jede Kategorie kann
+    unabhängig gewählt werden, ob die primäre Warnschwelle über Niederschlagswahrscheinlichkeit
+    (%) oder Niederschlagsmenge (z. B. mm pro Forecast-Stunde) bestimmt wird.
+
+    Die Wetterauslösung arbeitet fehlertolerant nach einem ODER-Prinzip: Ein ausgewählter
+    aktueller Wetterzustand, ein ausgewählter Forecast-Wetterzustand, die primäre numerische
+    Schwelle oder optional eine zusätzliche Niederschlagsmengen-Sicherheitsschwelle können
+    jeweils unabhängig eine Warnstufe aktivieren. Forecast-Niederschlagswerte werden dabei
+    über alle Forecast-Einträge im Vorwarnzeitraum ausgewertet und nicht nur über Einträge,
+    deren condition-Feld zu den ausgewählten Wetterzuständen passt.
+
+    Optional können Mobile-App-Notify-Entitäten direkt ausgewählt werden. Diese erhalten
+    zusätzlich zu den frei definierbaren Actions einfache Push-Nachrichten über
+    notify.send_message.
 
     unknown/unavailable werden immer separat als unbekannter Sensorzustand gemeldet.
     Optional kann zusätzlich last_reported als Stale-Heuristik verwendet werden.
@@ -44,16 +55,44 @@ blueprint:
                 - domain: weather
 
         weather_conditions:
-          name: Relevante Wetterzustände
+          name: Wetterzustände für kritische Fenster
           description: >-
-            Nur Forecast-Einträge mit einem dieser Wetterzustände werden ausgewertet.
-            Die Schwellenwerte darunter beziehen sich auf Niederschlagsdaten.
+            Diese Zustände gelten sowohl für den aktuellen Zustand der Wetter-Entität
+            als auch für den Forecast. Ein Treffer kann die kritische Wetterstufe
+            unabhängig von den numerischen Schwellen aktivieren.
           default:
             - rainy
             - pouring
             - lightning-rainy
             - hail
             - snowy-rainy
+          selector:
+            select:
+              multiple: true
+              options:
+                - label: Regen
+                  value: rainy
+                - label: Starkregen
+                  value: pouring
+                - label: Gewitter mit Regen
+                  value: lightning-rainy
+                - label: Hagel
+                  value: hail
+                - label: Schneeregen
+                  value: snowy-rainy
+                - label: Schnee
+                  value: snowy
+
+        regular_weather_conditions:
+          name: Wetterzustände für reguläre Fenster
+          description: >-
+            Wetterzustände, die auch ohne Erreichen einer numerischen Schwelle direkt
+            eine Warnung für reguläre Fenster auslösen. Standardmäßig sind hier nur
+            stärkere Wetterlagen ausgewählt.
+          default:
+            - pouring
+            - lightning-rainy
+            - hail
           selector:
             select:
               multiple: true
@@ -135,6 +174,30 @@ blueprint:
               step: 0.1
               mode: box
 
+        critical_amount_safety_enabled:
+          name: Niederschlagsmenge zusätzlich als Sicherheitsnetz
+          description: >-
+            Wenn aktiv, löst die unten eingestellte Niederschlagsmenge die kritische
+            Wetterstufe zusätzlich aus – auch wenn als primäre Schwelle
+            Regenwahrscheinlichkeit gewählt wurde und auch wenn der Wetterzustand
+            nicht als Regen klassifiziert ist.
+          default: true
+          selector:
+            boolean: {}
+
+        critical_amount_safety:
+          name: Sicherheits-Schwelle Niederschlagsmenge – kritisch
+          description: >-
+            Höchste vorhergesagte Niederschlagsmenge innerhalb einer Forecast-Stunde.
+            Einheit entsprechend der Wetter-Entität, typischerweise mm.
+          default: 0.2
+          selector:
+            number:
+              min: 0
+              max: 50
+              step: 0.1
+              mode: box
+
     regular_windows_settings:
       name: Reguläre Fenster
       input:
@@ -178,6 +241,29 @@ blueprint:
           description: >-
             Wird nur verwendet, wenn Niederschlagsmenge gewählt ist. Verglichen wird
             der höchste Forecast-Wert im Vorwarnzeitraum.
+          default: 1.5
+          selector:
+            number:
+              min: 0
+              max: 50
+              step: 0.1
+              mode: box
+
+        regular_amount_safety_enabled:
+          name: Niederschlagsmenge zusätzlich als Sicherheitsnetz
+          description: >-
+            Wenn aktiv, kann eine hohe vorhergesagte Niederschlagsmenge die Warnung
+            für reguläre Fenster unabhängig von Wetterzustand und primärer Schwellenart
+            auslösen.
+          default: true
+          selector:
+            boolean: {}
+
+        regular_amount_safety:
+          name: Sicherheits-Schwelle Niederschlagsmenge – regulär
+          description: >-
+            Höchste vorhergesagte Niederschlagsmenge innerhalb einer Forecast-Stunde.
+            Einheit entsprechend der Wetter-Entität, typischerweise mm.
           default: 1.5
           selector:
             number:
@@ -253,8 +339,23 @@ blueprint:
           selector:
             trigger: {}
 
+        mobile_notify_entities:
+          name: Handy-Benachrichtigungen (optional)
+          description: >-
+            Wähle eine oder mehrere Notify-Entitäten der Home-Assistant-Companion-App.
+            Diese Geräte erhalten automatisch Push-Nachrichten zusätzlich zu den frei
+            konfigurierbaren Actions weiter unten. Ist die Liste leer, wird kein direkter
+            Mobile-Push ausgeführt.
+          default: []
+          selector:
+            entity:
+              multiple: true
+              filter:
+                - domain: notify
+                  integration: mobile_app
+
         critical_actions:
-          name: Benachrichtigung für kritische Fenster
+          name: Zusätzliche Actions für kritische Fenster
           description: >-
             Frei definierbare Actions. In Nachrichtentemplates steht
             {{ critical_message }} zur Verfügung.
@@ -268,7 +369,7 @@ blueprint:
             action: {}
 
         regular_actions:
-          name: Benachrichtigung für reguläre Fenster
+          name: Zusätzliche Actions für reguläre Fenster
           description: >-
             Frei definierbare Actions. In Nachrichtentemplates steht
             {{ regular_message }} zur Verfügung.
@@ -282,7 +383,7 @@ blueprint:
             action: {}
 
         recommendation_actions:
-          name: Empfehlung für reguläre Fenster
+          name: Zusätzliche Actions für Empfehlungen
           description: >-
             Wird nur verwendet, wenn die optionale Vorwarnung aktiviert ist und die
             reguläre Warnschwelle noch nicht erreicht wurde. In Nachrichtentemplates
@@ -297,7 +398,7 @@ blueprint:
             action: {}
 
         data_problem_actions:
-          name: Benachrichtigung bei fehlenden Wetterdaten
+          name: Zusätzliche Actions bei fehlenden Wetterdaten
           description: >-
             Wird ausgeführt, wenn ein relevantes Fensterproblem besteht, der
             ausgewählte Forecast-Wert aber vom Wetteranbieter nicht geliefert wird.
@@ -346,7 +447,7 @@ blueprint:
                 - domain: input_boolean
 
         clearance_actions:
-          name: Entwarnungs-Benachrichtigung
+          name: Zusätzliche Actions für Entwarnung
           description: >-
             Wird gesendet, wenn eine zuvor gewarnte Fenstergruppe wieder in Ordnung
             ist. In Nachrichtentemplates steht {{ clearance_message }} zur Verfügung.
@@ -437,17 +538,22 @@ triggers:
 variables:
   weather_entity: !input weather_entity
   weather_conditions: !input weather_conditions
+  regular_weather_conditions: !input regular_weather_conditions
   forecast_hours: !input forecast_hours
 
   critical_windows: !input critical_windows
   critical_threshold_type: !input critical_threshold_type
   critical_probability: !input critical_probability
   critical_amount: !input critical_amount
+  critical_amount_safety_enabled: !input critical_amount_safety_enabled
+  critical_amount_safety: !input critical_amount_safety
 
   regular_windows: !input regular_windows
   regular_threshold_type: !input regular_threshold_type
   regular_probability: !input regular_probability
   regular_amount: !input regular_amount
+  regular_amount_safety_enabled: !input regular_amount_safety_enabled
+  regular_amount_safety: !input regular_amount_safety
   recommend_regular_with_critical: !input recommend_regular_with_critical
   regular_prewarning_enabled: !input regular_prewarning_enabled
   regular_prewarning_percent: !input regular_prewarning_percent
@@ -462,6 +568,7 @@ variables:
   regular_cooldown_timer: !input regular_cooldown_timer
   regular_cooldown_minutes: !input regular_cooldown_minutes
   bypass_cooldown_on_new_problem: !input bypass_cooldown_on_new_problem
+  mobile_notify_entities: !input mobile_notify_entities
 
   trigger_id: >-
     {{ trigger.id | default('') if trigger is defined else '' }}
@@ -604,6 +711,19 @@ actions:
 
   - if:
       - condition: template
+        value_template: >-
+          {{ (critical_clearance_now or regular_clearance_now)
+             and (mobile_notify_entities | length > 0) }}
+    then:
+      - action: notify.send_message
+        target:
+          entity_id: !input mobile_notify_entities
+        data:
+          title: "✅ Fenster-Entwarnung"
+          message: "{{ clearance_message }}"
+
+  - if:
+      - condition: template
         value_template: "{{ critical_clearance_now }}"
     then:
       - action: input_boolean.turn_off
@@ -639,6 +759,18 @@ actions:
           message: >-
             Die Wetter-Entität {{ weather_entity }} ist unknown oder unavailable.
             Es bestehen gleichzeitig offene oder unklare Fenster-/Sensorzustände.
+      - if:
+          - condition: template
+            value_template: "{{ mobile_notify_entities | length > 0 }}"
+        then:
+          - action: notify.send_message
+            target:
+              entity_id: !input mobile_notify_entities
+            data:
+              title: "⚠️ Wetterprüfung nicht möglich"
+              message: >-
+                Die Wetter-Entität {{ weather_entity }} ist unknown oder unavailable.
+                Gleichzeitig bestehen offene oder unklare Fenster-/Sensorzustände.
       - stop: "Wetter-Entität nicht verfügbar"
 
   - action: weather.get_forecasts
@@ -653,14 +785,14 @@ actions:
       forecast_list: >-
         {{ weather_response[weather_entity].forecast | default([], true) }}
 
-      relevant_forecast: >-
+      forecast_window: >-
         {% set ns = namespace(items=[]) %}
         {% set start_ts = as_timestamp(now()) - 3600 %}
         {% set end_ts = as_timestamp(now()) + ((forecast_hours | float(0)) * 3600) %}
         {% for f in forecast_list %}
-          {% if f.datetime is defined and f.condition is defined %}
+          {% if f.datetime is defined %}
             {% set ts = as_timestamp(f.datetime) %}
-            {% if ts >= start_ts and ts <= end_ts and f.condition in weather_conditions %}
+            {% if ts >= start_ts and ts <= end_ts %}
               {% set ns.items = ns.items + [f] %}
             {% endif %}
           {% endif %}
@@ -668,46 +800,64 @@ actions:
         {{ ns.items }}
 
   - variables:
-      matched_conditions: >-
-        {{ relevant_forecast | map(attribute='condition') | unique | list }}
+      current_weather_condition: "{{ states(weather_entity) }}"
+      critical_current_condition_match: >-
+        {{ states(weather_entity) in weather_conditions }}
+      regular_current_condition_match: >-
+        {{ states(weather_entity) in regular_weather_conditions }}
 
-      critical_metric_values: >-
+      critical_forecast_condition_matches: >-
+        {% set ns = namespace(items=[]) %}
+        {% for f in forecast_window %}
+          {% if f.condition is defined and f.condition in weather_conditions %}
+            {% set ns.items = ns.items + [f.condition] %}
+          {% endif %}
+        {% endfor %}
+        {{ ns.items | unique | list }}
+
+      regular_forecast_condition_matches: >-
+        {% set ns = namespace(items=[]) %}
+        {% for f in forecast_window %}
+          {% if f.condition is defined and f.condition in regular_weather_conditions %}
+            {% set ns.items = ns.items + [f.condition] %}
+          {% endif %}
+        {% endfor %}
+        {{ ns.items | unique | list }}
+
+      probability_values: >-
         {% set ns = namespace(values=[]) %}
-        {% for f in relevant_forecast %}
-          {% if critical_threshold_type == 'probability' %}
-            {% if f.precipitation_probability is defined and f.precipitation_probability is not none %}
-              {% set ns.values = ns.values + [f.precipitation_probability | float(0)] %}
-            {% endif %}
-          {% else %}
-            {% if f.precipitation is defined and f.precipitation is not none %}
-              {% set ns.values = ns.values + [f.precipitation | float(0)] %}
-            {% endif %}
+        {% for f in forecast_window %}
+          {% if f.precipitation_probability is defined and f.precipitation_probability is not none %}
+            {% set ns.values = ns.values + [f.precipitation_probability | float(0)] %}
           {% endif %}
         {% endfor %}
         {{ ns.values }}
 
-      regular_metric_values: >-
+      precipitation_values: >-
         {% set ns = namespace(values=[]) %}
-        {% for f in relevant_forecast %}
-          {% if regular_threshold_type == 'probability' %}
-            {% if f.precipitation_probability is defined and f.precipitation_probability is not none %}
-              {% set ns.values = ns.values + [f.precipitation_probability | float(0)] %}
-            {% endif %}
-          {% else %}
-            {% if f.precipitation is defined and f.precipitation is not none %}
-              {% set ns.values = ns.values + [f.precipitation | float(0)] %}
-            {% endif %}
+        {% for f in forecast_window %}
+          {% if f.precipitation is defined and f.precipitation is not none %}
+            {% set ns.values = ns.values + [f.precipitation | float(0)] %}
           {% endif %}
         {% endfor %}
         {{ ns.values }}
 
   - variables:
-      critical_metric_available: "{{ critical_metric_values | length > 0 }}"
-      critical_metric_value: "{{ (critical_metric_values | max) if (critical_metric_values | length > 0) else none }}"
+      probability_available: "{{ probability_values | length > 0 }}"
+      max_probability: "{{ (probability_values | max) if (probability_values | length > 0) else none }}"
+      precipitation_available: "{{ precipitation_values | length > 0 }}"
+      max_precipitation: "{{ (precipitation_values | max) if (precipitation_values | length > 0) else none }}"
+
+      critical_metric_available: >-
+        {{ probability_available if critical_threshold_type == 'probability' else precipitation_available }}
+      critical_metric_value: >-
+        {{ max_probability if critical_threshold_type == 'probability' else max_precipitation }}
       critical_threshold: "{{ critical_probability if critical_threshold_type == 'probability' else critical_amount }}"
 
-      regular_metric_available: "{{ regular_metric_values | length > 0 }}"
-      regular_metric_value: "{{ (regular_metric_values | max) if (regular_metric_values | length > 0) else none }}"
+      regular_metric_available: >-
+        {{ probability_available if regular_threshold_type == 'probability' else precipitation_available }}
+      regular_metric_value: >-
+        {{ max_probability if regular_threshold_type == 'probability' else max_precipitation }}
       regular_threshold: "{{ regular_probability if regular_threshold_type == 'probability' else regular_amount }}"
       regular_prewarning_threshold: >-
         {{ ((regular_probability if regular_threshold_type == 'probability' else regular_amount) | float(0))
@@ -721,19 +871,63 @@ actions:
            and states(regular_cooldown_timer) in ['active', 'paused'] }}
 
   - variables:
-      critical_weather_active: >-
-        {{ (relevant_forecast | length > 0)
-           and critical_metric_available
+      critical_primary_metric_match: >-
+        {{ critical_metric_available
            and ((critical_metric_value | float(0)) >= (critical_threshold | float(0))) }}
-      regular_weather_active: >-
-        {{ (relevant_forecast | length > 0)
-           and regular_metric_available
+      regular_primary_metric_match: >-
+        {{ regular_metric_available
            and ((regular_metric_value | float(0)) >= (regular_threshold | float(0))) }}
+
+      critical_amount_safety_match: >-
+        {{ critical_amount_safety_enabled
+           and precipitation_available
+           and ((max_precipitation | float(0)) >= (critical_amount_safety | float(0))) }}
+      regular_amount_safety_match: >-
+        {{ regular_amount_safety_enabled
+           and precipitation_available
+           and ((max_precipitation | float(0)) >= (regular_amount_safety | float(0))) }}
+
+      critical_condition_match: >-
+        {{ critical_current_condition_match or (critical_forecast_condition_matches | length > 0) }}
+      regular_condition_match: >-
+        {{ regular_current_condition_match or (regular_forecast_condition_matches | length > 0) }}
+
+      critical_weather_active: >-
+        {{ critical_condition_match or critical_primary_metric_match or critical_amount_safety_match }}
+      regular_weather_active: >-
+        {{ regular_condition_match or regular_primary_metric_match or regular_amount_safety_match }}
       regular_prewarning_weather_active: >-
         {{ regular_prewarning_enabled
-           and (relevant_forecast | length > 0)
            and regular_metric_available
            and ((regular_metric_value | float(0)) >= (regular_prewarning_threshold | float(0))) }}
+
+      critical_trigger_reasons: >-
+        {% set ns = namespace(items=[]) %}
+        {% if critical_current_condition_match %}{% set ns.items = ns.items + ['aktueller Wetterzustand: ' ~ current_weather_condition] %}{% endif %}
+        {% if critical_forecast_condition_matches | length > 0 %}{% set ns.items = ns.items + ['Forecast-Wetterzustand: ' ~ (critical_forecast_condition_matches | join(', '))] %}{% endif %}
+        {% if critical_primary_metric_match %}
+          {% set label = 'Regenwahrscheinlichkeit' if critical_threshold_type == 'probability' else 'Niederschlagsmenge' %}
+          {% set unit = '%' if critical_threshold_type == 'probability' else precipitation_unit %}
+          {% set ns.items = ns.items + [label ~ ' ' ~ critical_metric_value ~ ' ' ~ unit ~ ' ≥ ' ~ critical_threshold ~ ' ' ~ unit] %}
+        {% endif %}
+        {% if critical_amount_safety_match and not (critical_threshold_type == 'amount' and critical_primary_metric_match) %}
+          {% set ns.items = ns.items + ['Niederschlags-Sicherheitsnetz ' ~ max_precipitation ~ ' ' ~ precipitation_unit ~ ' ≥ ' ~ critical_amount_safety ~ ' ' ~ precipitation_unit] %}
+        {% endif %}
+        {{ ns.items }}
+
+      regular_trigger_reasons: >-
+        {% set ns = namespace(items=[]) %}
+        {% if regular_current_condition_match %}{% set ns.items = ns.items + ['aktueller Wetterzustand: ' ~ current_weather_condition] %}{% endif %}
+        {% if regular_forecast_condition_matches | length > 0 %}{% set ns.items = ns.items + ['Forecast-Wetterzustand: ' ~ (regular_forecast_condition_matches | join(', '))] %}{% endif %}
+        {% if regular_primary_metric_match %}
+          {% set label = 'Regenwahrscheinlichkeit' if regular_threshold_type == 'probability' else 'Niederschlagsmenge' %}
+          {% set unit = '%' if regular_threshold_type == 'probability' else precipitation_unit %}
+          {% set ns.items = ns.items + [label ~ ' ' ~ regular_metric_value ~ ' ' ~ unit ~ ' ≥ ' ~ regular_threshold ~ ' ' ~ unit] %}
+        {% endif %}
+        {% if regular_amount_safety_match and not (regular_threshold_type == 'amount' and regular_primary_metric_match) %}
+          {% set ns.items = ns.items + ['Niederschlags-Sicherheitsnetz ' ~ max_precipitation ~ ' ' ~ precipitation_unit ~ ' ≥ ' ~ regular_amount_safety ~ ' ' ~ precipitation_unit] %}
+        {% endif %}
+        {{ ns.items }}
 
   - variables:
       critical_alert: >-
@@ -755,13 +949,17 @@ actions:
            and (regular_recommendation_due_to_critical or regular_recommendation_due_to_prewarning) }}
 
       critical_data_problem: >-
-        {{ (relevant_forecast | length > 0)
+        {{ (forecast_window | length > 0)
            and (critical_problem_count | int(0) > 0)
-           and not critical_metric_available }}
+           and not critical_metric_available
+           and not critical_condition_match
+           and not critical_amount_safety_match }}
       regular_data_problem: >-
-        {{ (relevant_forecast | length > 0)
+        {{ (forecast_window | length > 0)
            and (regular_problem_count | int(0) > 0)
-           and not regular_metric_available }}
+           and not regular_metric_available
+           and not regular_condition_match
+           and not regular_amount_safety_match }}
 
       critical_repeat_allowed: >-
         {{ (critical_cooldown_minutes | int(0) <= 0)
@@ -800,18 +998,23 @@ actions:
         {{ regular_data_problem and (regular_repeat_allowed or regular_bypass_cooldown) }}
 
   - variables:
+      critical_title: "⚠️ Kritisches Fenster + Wetter"
+      regular_title: "🌧️ Fenster + stärkerer Niederschlag"
+      recommendation_title: "🌦️ Fenster vorsorglich schließen"
+      clearance_title: "✅ Fenster-Entwarnung"
+      data_problem_title: "Wetterdaten für Fensterwarnung unvollständig"
+
       critical_message: >-
-        {% set metric_name = 'Regenwahrscheinlichkeit' if critical_threshold_type == 'probability' else 'Niederschlagsmenge' %}
-        {% set unit = '%' if critical_threshold_type == 'probability' else precipitation_unit %}
-        {% set reg_metric_name = 'Regenwahrscheinlichkeit' if regular_threshold_type == 'probability' else 'Niederschlagsmenge' %}
-        {% set reg_unit = '%' if regular_threshold_type == 'probability' else precipitation_unit %}
         ⚠️ Wetterwarnung für kritische Fenster
 
         {% if critical_new_problem_event %}
         Neu erkannt: {{ triggered_window_name }} – {% if trigger_to_state == 'on' %}geöffnet{% else %}Sensorstatus {{ trigger_to_state }}{% endif %}.
         {% endif %}
-        Relevantes Wetter in den nächsten {{ forecast_hours }} h: {{ matched_conditions | join(', ') }}.
-        {{ metric_name }}: max. {{ critical_metric_value }} {{ unit }} (kritische Schwelle {{ critical_threshold }} {{ unit }}).
+        Auslöser (ODER-Logik):
+        {% for reason in critical_trigger_reasons %}• {{ reason }}
+        {% endfor %}
+        {% if probability_available %}Max. Regenwahrscheinlichkeit in {{ forecast_hours }} h: {{ max_probability }} %.{% endif %}
+        {% if precipitation_available %}Max. Niederschlag pro Forecast-Stunde in {{ forecast_hours }} h: {{ max_precipitation }} {{ precipitation_unit }}.{% endif %}
 
         {% if critical_open | length > 0 %}
         Sofort schließen:
@@ -833,11 +1036,7 @@ actions:
         Empfohlen zu schließen:
         {% for item in regular_open %}• {{ item }}
         {% endfor %}
-        {% if regular_metric_available %}
-        Die reguläre Warnschwelle ist noch nicht erreicht: {{ reg_metric_name }} max. {{ regular_metric_value }} {{ reg_unit }} (Warnung ab {{ regular_threshold }} {{ reg_unit }}).
-        {% else %}
-        Die reguläre Warnschwelle konnte wegen fehlender Forecast-Daten nicht ausgewertet werden.
-        {% endif %}
+        Die Warnstufe für reguläre Fenster ist derzeit noch nicht aktiv.
         {% endif %}
         {% if (regular_unknown | length > 0) and not regular_alert %}
         Hinweis – Status regulärer Sensoren unbekannt/unavailable: {{ regular_unknown | join(', ') }}.
@@ -847,15 +1046,17 @@ actions:
         {% endif %}
 
       regular_message: >-
-        {% set metric_name = 'Regenwahrscheinlichkeit' if regular_threshold_type == 'probability' else 'Niederschlagsmenge' %}
-        {% set unit = '%' if regular_threshold_type == 'probability' else precipitation_unit %}
-        🌧️ Warnschwelle für reguläre Fenster erreicht
+        🌧️ Warnstufe für reguläre Fenster erreicht
 
         {% if regular_new_problem_event %}
         Neu erkannt: {{ triggered_window_name }} – {% if trigger_to_state == 'on' %}geöffnet{% else %}Sensorstatus {{ trigger_to_state }}{% endif %}.
         {% endif %}
-        Relevantes Wetter in den nächsten {{ forecast_hours }} h: {{ matched_conditions | join(', ') }}.
-        {{ metric_name }}: max. {{ regular_metric_value }} {{ unit }} (Schwelle {{ regular_threshold }} {{ unit }}).
+        Auslöser (ODER-Logik):
+        {% for reason in regular_trigger_reasons %}• {{ reason }}
+        {% endfor %}
+        {% if probability_available %}Max. Regenwahrscheinlichkeit in {{ forecast_hours }} h: {{ max_probability }} %.{% endif %}
+        {% if precipitation_available %}Max. Niederschlag pro Forecast-Stunde in {{ forecast_hours }} h: {{ max_precipitation }} {{ precipitation_unit }}.{% endif %}
+
         {% if regular_open | length > 0 %}
         Bitte schließen:
         {% for item in regular_open %}• {{ item }}
@@ -875,17 +1076,14 @@ actions:
         Neu geöffnet: {{ triggered_window_name }}.
         {% endif %}
         {% if regular_recommendation_due_to_critical %}
-        Die kritische Wetterstufe ist bereits erreicht. Die strengere Warnschwelle für
-        reguläre Fenster ist noch nicht erreicht; vorsorgliches Schließen wird empfohlen.
-        {% set crit_metric_name = 'Regenwahrscheinlichkeit' if critical_threshold_type == 'probability' else 'Niederschlagsmenge' %}
-        {% set crit_unit = '%' if critical_threshold_type == 'probability' else precipitation_unit %}
-        {{ crit_metric_name }}: max. {{ critical_metric_value }} {{ crit_unit }} (kritische Schwelle {{ critical_threshold }} {{ crit_unit }}).
+        Die kritische Wetterstufe ist bereits aktiv. Die Warnstufe für reguläre Fenster
+        ist noch nicht aktiv; vorsorgliches Schließen wird empfohlen.
+        Kritische Auslöser: {{ critical_trigger_reasons | join('; ') }}.
         {% else %}
         {% set metric_name = 'Regenwahrscheinlichkeit' if regular_threshold_type == 'probability' else 'Niederschlagsmenge' %}
         {% set unit = '%' if regular_threshold_type == 'probability' else precipitation_unit %}
-        Für die nächsten {{ forecast_hours }} h ist relevantes Wetter vorhergesagt ({{ matched_conditions | join(', ') }}).
         {{ metric_name }}: max. {{ regular_metric_value }} {{ unit }}.
-        Die eigentliche Warnschwelle liegt bei {{ regular_threshold }} {{ unit }}; die Vorwarnung beginnt bei {{ regular_prewarning_threshold | round(2) }} {{ unit }}.
+        Die primäre Warnschwelle liegt bei {{ regular_threshold }} {{ unit }}; die Vorwarnung beginnt bei {{ regular_prewarning_threshold | round(2) }} {{ unit }}.
         {% endif %}
 
         Offen – vorsorglich schließen empfohlen:
@@ -894,8 +1092,9 @@ actions:
 
       data_problem_message: >-
         Wetterdaten für die Fensterprüfung sind unvollständig.
-        Relevantes Wetter wurde erkannt ({{ matched_conditions | join(', ') }}), aber der
-        ausgewählte Wetteranbieter liefert nicht alle benötigten Forecast-Daten.
+        Im Vorwarnzeitraum wurden Forecast-Einträge gefunden, aber der Wetteranbieter
+        liefert den für die primäre Schwelle benötigten Wert nicht. Der fehlende Wert
+        wird ausdrücklich nicht als 0 interpretiert.
         {% if critical_data_problem %}
         Kritische Fenster: Für die gewählte Schwellenart "{{ critical_threshold_type }}" fehlt der Wert.
         Betroffen/offen/unklar: {{ (critical_open + critical_unknown + critical_stale) | join(', ') }}.
@@ -904,7 +1103,6 @@ actions:
         Reguläre Fenster: Für die gewählte Schwellenart "{{ regular_threshold_type }}" fehlt der Wert.
         Betroffen/offen/unklar: {{ (regular_open + regular_unknown + regular_stale) | join(', ') }}.
         {% endif %}
-        Der fehlende Wert wird ausdrücklich nicht als 0 interpretiert.
 
   - choose:
       - conditions:
@@ -912,11 +1110,33 @@ actions:
             value_template: "{{ critical_should_notify }}"
         sequence: !input critical_actions
 
+  - if:
+      - condition: template
+        value_template: "{{ critical_should_notify and (mobile_notify_entities | length > 0) }}"
+    then:
+      - action: notify.send_message
+        target:
+          entity_id: !input mobile_notify_entities
+        data:
+          title: "{{ critical_title }}"
+          message: "{{ critical_message }}"
+
   - choose:
       - conditions:
           - condition: template
             value_template: "{{ regular_should_notify }}"
         sequence: !input regular_actions
+
+  - if:
+      - condition: template
+        value_template: "{{ regular_should_notify and (mobile_notify_entities | length > 0) }}"
+    then:
+      - action: notify.send_message
+        target:
+          entity_id: !input mobile_notify_entities
+        data:
+          title: "{{ regular_title }}"
+          message: "{{ regular_message }}"
 
   - choose:
       - conditions:
@@ -924,12 +1144,36 @@ actions:
             value_template: "{{ regular_recommendation_should_notify }}"
         sequence: !input recommendation_actions
 
+  - if:
+      - condition: template
+        value_template: "{{ regular_recommendation_should_notify and (mobile_notify_entities | length > 0) }}"
+    then:
+      - action: notify.send_message
+        target:
+          entity_id: !input mobile_notify_entities
+        data:
+          title: "{{ recommendation_title }}"
+          message: "{{ recommendation_message }}"
+
   - choose:
       - conditions:
           - condition: template
             value_template: >-
               {{ critical_data_problem_should_notify or regular_data_problem_should_notify }}
         sequence: !input data_problem_actions
+
+  - if:
+      - condition: template
+        value_template: >-
+          {{ (critical_data_problem_should_notify or regular_data_problem_should_notify)
+             and (mobile_notify_entities | length > 0) }}
+    then:
+      - action: notify.send_message
+        target:
+          entity_id: !input mobile_notify_entities
+        data:
+          title: "{{ data_problem_title }}"
+          message: "{{ data_problem_message }}"
 
   - variables:
       critical_notified_now: >-
