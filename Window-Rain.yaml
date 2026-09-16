@@ -20,6 +20,11 @@ blueprint:
     in derselben Meldung als Empfehlung zum Schließen erscheinen. Optional kann für
     reguläre Fenster außerdem ein Vorwarnbereich aktiviert werden, der bereits vor
     Erreichen der regulären Warnschwelle eine Empfehlung sendet.
+
+    Die auswählbaren Kontaktsensoren werden auf Binary-Sensoren der Device Classes
+    'window' und 'door' begrenzt. Optional kann je Fenstergruppe ein input_boolean-
+    Helper den Warnstatus speichern. Dadurch kann nach dem Schließen der zuvor
+    beanstandeten Fenster gezielt eine Entwarnung gesendet werden.
   domain: automation
   homeassistant:
     min_version: 2026.9.0
@@ -88,6 +93,9 @@ blueprint:
               multiple: true
               filter:
                 - domain: binary_sensor
+                  device_class:
+                    - window
+                    - door
 
         critical_threshold_type:
           name: Schwellenart
@@ -138,6 +146,9 @@ blueprint:
               multiple: true
               filter:
                 - domain: binary_sensor
+                  device_class:
+                    - window
+                    - door
 
         regular_threshold_type:
           name: Schwellenart
@@ -300,6 +311,54 @@ blueprint:
           selector:
             action: {}
 
+        clearance_enabled:
+          name: Entwarnung aktivieren
+          description: >-
+            Sendet eine Entwarnung, sobald zuvor beanstandete Fenster der jeweiligen
+            Gruppe wieder geschlossen sind und ihre Sensoren einen verlässlichen
+            Zustand liefern. Für eine zuverlässige Speicherung über mehrere Läufe
+            sollte unten je verwendeter Gruppe ein input_boolean-Helper gewählt werden.
+          default: true
+          selector:
+            boolean: {}
+
+        critical_alert_state_helper:
+          name: Status-Helper – kritische Fenster (optional)
+          description: >-
+            Optionaler input_boolean-Helper. Der Blueprint schaltet ihn bei einer
+            kritischen Warnung ein und nach erfolgreicher Entwarnung wieder aus.
+            Damit bleibt gespeichert, dass tatsächlich eine Warnung aktiv war.
+          default: ""
+          selector:
+            entity:
+              filter:
+                - domain: input_boolean
+
+        regular_alert_state_helper:
+          name: Status-Helper – reguläre Fenster (optional)
+          description: >-
+            Optionaler input_boolean-Helper für reguläre Fenster. Funktioniert analog
+            zum Status-Helper der kritischen Fenster.
+          default: ""
+          selector:
+            entity:
+              filter:
+                - domain: input_boolean
+
+        clearance_actions:
+          name: Entwarnungs-Benachrichtigung
+          description: >-
+            Wird gesendet, wenn eine zuvor gewarnte Fenstergruppe wieder in Ordnung
+            ist. In Nachrichtentemplates steht {{ clearance_message }} zur Verfügung.
+          default:
+            - action: persistent_notification.create
+              data:
+                notification_id: weather_window_clearance
+                title: "✅ Fenster-Entwarnung"
+                message: "{{ clearance_message }}"
+          selector:
+            action: {}
+
         cooldown_minutes:
           name: Cooldown nach Warnung
           description: >-
@@ -307,7 +366,8 @@ blueprint:
             die eingestellte Zeit aktiv und ignoriert weitere Trigger. Dadurch werden
             identische Erinnerungen unterdrückt. 0 deaktiviert den Cooldown.
             Hinweis: Der Cooldown gilt gemeinsam für kritische Fenster, reguläre
-            Fenster und fehlende Wetterdaten.
+            Fenster und fehlende Wetterdaten. Eine Entwarnung aus einem späteren
+            Lauf kann daher frühestens nach Ende dieses Cooldowns verarbeitet werden.
           default: 30
           selector:
             number:
@@ -338,6 +398,9 @@ variables:
   regular_prewarning_percent: !input regular_prewarning_percent
 
   stale_minutes: !input stale_minutes
+  clearance_enabled: !input clearance_enabled
+  critical_alert_state_helper: !input critical_alert_state_helper
+  regular_alert_state_helper: !input regular_alert_state_helper
   cooldown_minutes: !input cooldown_minutes
 
 conditions: []
@@ -534,6 +597,18 @@ actions:
            ) }}
 
   - variables:
+      critical_clearance_now: >-
+        {{ clearance_enabled
+           and (critical_alert_state_helper | string | length > 0)
+           and is_state(critical_alert_state_helper, 'on')
+           and (critical_problem_count | int(0) == 0) }}
+      regular_clearance_now: >-
+        {{ clearance_enabled
+           and (regular_alert_state_helper | string | length > 0)
+           and is_state(regular_alert_state_helper, 'on')
+           and (regular_problem_count | int(0) == 0) }}
+
+  - variables:
       critical_message: >-
         {% set metric_name = 'Regenwahrscheinlichkeit' if critical_threshold_type == 'probability' else 'Niederschlagsmenge' %}
         {% set unit = '%' if critical_threshold_type == 'probability' else precipitation_unit %}
@@ -609,6 +684,21 @@ actions:
         {% for item in regular_open %}• {{ item }}
         {% endfor %}
 
+      clearance_message: >-
+        ✅ Entwarnung
+
+        {% if critical_clearance_now %}
+        Kritische Fenster: Alle zuvor beanstandeten Fenster sind wieder geschlossen
+        und die ausgewählten Sensoren liefern einen verlässlichen Zustand.
+        {% endif %}
+        {% if regular_clearance_now %}
+        Reguläre Fenster: Alle zuvor beanstandeten Fenster sind wieder geschlossen
+        und die ausgewählten Sensoren liefern einen verlässlichen Zustand.
+        {% endif %}
+
+        Die Entwarnung bezieht sich auf den Fensterstatus. Die Wettervorhersage kann
+        weiterhin Regen oder andere ausgewählte Wetterzustände enthalten.
+
       data_problem_message: >-
         Relevantes Wetter wurde erkannt ({{ matched_conditions | join(', ') }}), aber der ausgewählte
         Wetteranbieter liefert nicht alle benötigten Forecast-Daten.
@@ -622,17 +712,59 @@ actions:
         {% endif %}
         Der fehlende Wert wird ausdrücklich nicht als 0 interpretiert.
 
+  # Entwarnung aus einem früheren Lauf. Die optionalen input_boolean-Helper
+  # speichern, ob für die jeweilige Gruppe tatsächlich eine Warnung aktiv war.
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ critical_clearance_now or regular_clearance_now }}"
+        sequence: !input clearance_actions
+
+  - if:
+      - condition: template
+        value_template: "{{ critical_clearance_now }}"
+    then:
+      - action: input_boolean.turn_off
+        target:
+          entity_id: "{{ critical_alert_state_helper }}"
+
+  - if:
+      - condition: template
+        value_template: "{{ regular_clearance_now }}"
+    then:
+      - action: input_boolean.turn_off
+        target:
+          entity_id: "{{ regular_alert_state_helper }}"
+
   - choose:
       - conditions:
           - condition: template
             value_template: "{{ critical_alert }}"
         sequence: !input critical_actions
 
+  - if:
+      - condition: template
+        value_template: >-
+          {{ critical_alert and (critical_alert_state_helper | string | length > 0) }}
+    then:
+      - action: input_boolean.turn_on
+        target:
+          entity_id: "{{ critical_alert_state_helper }}"
+
   - choose:
       - conditions:
           - condition: template
             value_template: "{{ regular_alert }}"
         sequence: !input regular_actions
+
+  - if:
+      - condition: template
+        value_template: >-
+          {{ regular_alert and (regular_alert_state_helper | string | length > 0) }}
+    then:
+      - action: input_boolean.turn_on
+        target:
+          entity_id: "{{ regular_alert_state_helper }}"
 
   - choose:
       - conditions:
@@ -657,6 +789,89 @@ actions:
     then:
       - delay:
           minutes: "{{ cooldown_minutes | int(0) }}"
+
+      # Direkt nach dem Cooldown noch einmal den LIVE-Sensorzustand prüfen. So kann
+      # eine Entwarnung gesendet werden, ohne auf den nächsten Zeit-Trigger zu warten.
+      - variables:
+          critical_resolved_after_cooldown: >-
+            {% set ns = namespace(ok=true) %}
+            {% if clearance_enabled and (critical_alert_state_helper | string | length > 0) and is_state(critical_alert_state_helper, 'on') %}
+              {% for e in critical_windows %}
+                {% if states(e) != 'off' %}
+                  {% set ns.ok = false %}
+                {% elif stale_minutes | int(0) > 0 %}
+                  {% set obj = (expand(e) | list | first) | default(none) %}
+                  {% if obj is not none and obj.last_reported is defined %}
+                    {% set age = as_timestamp(now()) - as_timestamp(obj.last_reported) %}
+                    {% if age >= ((stale_minutes | int(0)) * 60) %}
+                      {% set ns.ok = false %}
+                    {% endif %}
+                  {% endif %}
+                {% endif %}
+              {% endfor %}
+              {{ ns.ok }}
+            {% else %}
+              false
+            {% endif %}
+          regular_resolved_after_cooldown: >-
+            {% set ns = namespace(ok=true) %}
+            {% if clearance_enabled and (regular_alert_state_helper | string | length > 0) and is_state(regular_alert_state_helper, 'on') %}
+              {% for e in regular_windows %}
+                {% if states(e) != 'off' %}
+                  {% set ns.ok = false %}
+                {% elif stale_minutes | int(0) > 0 %}
+                  {% set obj = (expand(e) | list | first) | default(none) %}
+                  {% if obj is not none and obj.last_reported is defined %}
+                    {% set age = as_timestamp(now()) - as_timestamp(obj.last_reported) %}
+                    {% if age >= ((stale_minutes | int(0)) * 60) %}
+                      {% set ns.ok = false %}
+                    {% endif %}
+                  {% endif %}
+                {% endif %}
+              {% endfor %}
+              {{ ns.ok }}
+            {% else %}
+              false
+            {% endif %}
+
+      - variables:
+          clearance_message: >-
+            ✅ Entwarnung
+
+            {% if critical_resolved_after_cooldown %}
+            Kritische Fenster: Alle zuvor beanstandeten Fenster sind wieder geschlossen
+            und die ausgewählten Sensoren liefern einen verlässlichen Zustand.
+            {% endif %}
+            {% if regular_resolved_after_cooldown %}
+            Reguläre Fenster: Alle zuvor beanstandeten Fenster sind wieder geschlossen
+            und die ausgewählten Sensoren liefern einen verlässlichen Zustand.
+            {% endif %}
+
+            Die Entwarnung bezieht sich auf den Fensterstatus. Die Wettervorhersage kann
+            weiterhin Regen oder andere ausgewählte Wetterzustände enthalten.
+
+      - choose:
+          - conditions:
+              - condition: template
+                value_template: >-
+                  {{ critical_resolved_after_cooldown or regular_resolved_after_cooldown }}
+            sequence: !input clearance_actions
+
+      - if:
+          - condition: template
+            value_template: "{{ critical_resolved_after_cooldown }}"
+        then:
+          - action: input_boolean.turn_off
+            target:
+              entity_id: "{{ critical_alert_state_helper }}"
+
+      - if:
+          - condition: template
+            value_template: "{{ regular_resolved_after_cooldown }}"
+        then:
+          - action: input_boolean.turn_off
+            target:
+              entity_id: "{{ regular_alert_state_helper }}"
 
 mode: single
 max_exceeded: silent
