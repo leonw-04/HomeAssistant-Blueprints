@@ -1,5 +1,5 @@
 blueprint:
-  name: "Wetterwarnung: offene / unerreichbare Fenster v0.7"
+  name: "Wetterwarnung: offene / unerreichbare Fenster v0.8"
   description: >-
     Prüft aktuellen Wetterzustand und stündlichen Wetter-Forecast und meldet offene
     oder nicht verlässlich rückmeldende Fenstersensoren. Es gibt zwei Fensterkategorien:
@@ -19,9 +19,12 @@ blueprint:
     notify.send_message.
 
     unknown/unavailable werden immer separat als unbekannter Sensorzustand gemeldet.
-    Optional kann zusätzlich last_reported als Stale-Heuristik verwendet werden.
-    Diese Option nur aktivieren, wenn die verwendete Sensorintegration regelmäßig
-    Zustände an Home Assistant meldet.
+    Für eine echte Kommunikations-/Last-seen-Prüfung können optional separate
+    Zeitstempel-Sensoren (z. B. Zigbee2MQTT last_seen) ausgewählt werden. Diese werden
+    automatisch über das gemeinsame Home-Assistant-Gerät dem passenden Fensterkontakt
+    zugeordnet. Die frühere last_reported-Prüfung bleibt nur als expliziter Legacy-Modus
+    verfügbar, da viele batteriebetriebene Kontakte bei unverändertem Zustand nichts
+    an Home Assistant melden und sonst fälschlich als veraltet erscheinen.
 
     Neue Fensterzustände werden ereignisbasiert sofort geprüft. Wird während einer
     relevanten Wetterlage ein weiteres Fenster geöffnet oder ein Sensor unknown/
@@ -307,15 +310,49 @@ blueprint:
               mode: slider
 
     sensor_health_settings:
-      name: Sensor-Rückmeldung
+      name: Sensor-Rückmeldung / Last seen
       input:
-        stale_minutes:
-          name: Keine Rückmeldung seit ... Minuten
+        sensor_health_mode:
+          name: Prüfung auf fehlende Rückmeldung
           description: >-
-            0 deaktiviert die Prüfung. Wenn größer 0, wird last_reported geprüft.
-            Nur verwenden, wenn deine Fensterintegration auch bei unverändertem
-            Fensterzustand regelmäßig an Home Assistant berichtet. Sonst entstehen
-            Fehlalarme.
+            Empfohlen ist „Nur unknown/unavailable“ oder die Prüfung über echte
+            Last-seen-Zeitstempel. last_reported des Fensterkontakts ist KEIN
+            zuverlässiger Funk-/Lebenszeichen-Zeitpunkt und wird nur noch als
+            Legacy-Option angeboten.
+          default: availability_only
+          selector:
+            select:
+              options:
+                - label: Nur unknown/unavailable (empfohlen ohne Last-seen-Sensoren)
+                  value: availability_only
+                - label: Echte Last-seen-Zeitstempel verwenden
+                  value: last_seen_entities
+                - label: Legacy – last_reported des Fensterkontakts
+                  value: legacy_last_reported
+
+        last_seen_entities:
+          name: Last-seen-Zeitstempel der Fenstergeräte
+          description: >-
+            Optional. Wähle die Timestamp-Sensoren, die die tatsächliche letzte
+            Kommunikation der Fensterkontakte abbilden (z. B. Zigbee2MQTT last_seen).
+            Der Blueprint ordnet jeden ausgewählten Zeitstempel über die gemeinsame
+            Device-ID automatisch dem zugehörigen Tür-/Fenster-Binary-Sensor zu.
+            Fenster ohne passend ausgewählten Zeitstempel werden NICHT als stale
+            eingestuft.
+          default: []
+          selector:
+            entity:
+              multiple: true
+              filter:
+                - domain: sensor
+                  device_class: timestamp
+
+        stale_minutes:
+          name: Last seen älter als ... Minuten
+          description: >-
+            0 deaktiviert die Altersprüfung. Im empfohlenen Last-seen-Modus wird der
+            Zeitstempel der oben ausgewählten Sensoren geprüft. Im Legacy-Modus wird
+            stattdessen weiterhin last_reported des Fensterkontakts verwendet.
           default: 0
           selector:
             number:
@@ -558,6 +595,8 @@ variables:
   regular_prewarning_enabled: !input regular_prewarning_enabled
   regular_prewarning_percent: !input regular_prewarning_percent
 
+  sensor_health_mode: !input sensor_health_mode
+  last_seen_entities: !input last_seen_entities
   stale_minutes: !input stale_minutes
   clearance_enabled: !input clearance_enabled
   critical_alert_state_helper: !input critical_alert_state_helper
@@ -620,13 +659,35 @@ actions:
 
       critical_stale: >-
         {% set ns = namespace(items=[]) %}
-        {% if stale_minutes | int(0) > 0 %}
+        {% set limit = (stale_minutes | int(0)) * 60 %}
+        {% if sensor_health_mode == 'last_seen_entities' and limit > 0 %}
+          {% for e in critical_windows %}
+            {% if states(e) not in ['unknown', 'unavailable'] %}
+              {% set dev = device_id(e) %}
+              {% set seen = namespace(matched=false, latest=none) %}
+              {% if dev is not none %}
+                {% for ls in last_seen_entities %}
+                  {% if device_id(ls) == dev %}
+                    {% set seen.matched = true %}
+                    {% set ts = as_timestamp(states(ls), default=none) %}
+                    {% if ts is not none and (seen.latest is none or ts > seen.latest) %}
+                      {% set seen.latest = ts %}
+                    {% endif %}
+                  {% endif %}
+                {% endfor %}
+              {% endif %}
+              {% if seen.matched and (seen.latest is none or (as_timestamp(now()) - seen.latest) >= limit) %}
+                {% set ns.items = ns.items + [state_attr(e, 'friendly_name') or e] %}
+              {% endif %}
+            {% endif %}
+          {% endfor %}
+        {% elif sensor_health_mode == 'legacy_last_reported' and limit > 0 %}
           {% for e in critical_windows %}
             {% if states(e) not in ['unknown', 'unavailable'] %}
               {% set obj = (expand(e) | list | first) | default(none) %}
               {% if obj is not none and obj.last_reported is defined %}
                 {% set age = as_timestamp(now()) - as_timestamp(obj.last_reported) %}
-                {% if age >= ((stale_minutes | int(0)) * 60) %}
+                {% if age >= limit %}
                   {% set ns.items = ns.items + [state_attr(e, 'friendly_name') or e] %}
                 {% endif %}
               {% endif %}
@@ -655,13 +716,35 @@ actions:
 
       regular_stale: >-
         {% set ns = namespace(items=[]) %}
-        {% if stale_minutes | int(0) > 0 %}
+        {% set limit = (stale_minutes | int(0)) * 60 %}
+        {% if sensor_health_mode == 'last_seen_entities' and limit > 0 %}
+          {% for e in regular_windows %}
+            {% if states(e) not in ['unknown', 'unavailable'] %}
+              {% set dev = device_id(e) %}
+              {% set seen = namespace(matched=false, latest=none) %}
+              {% if dev is not none %}
+                {% for ls in last_seen_entities %}
+                  {% if device_id(ls) == dev %}
+                    {% set seen.matched = true %}
+                    {% set ts = as_timestamp(states(ls), default=none) %}
+                    {% if ts is not none and (seen.latest is none or ts > seen.latest) %}
+                      {% set seen.latest = ts %}
+                    {% endif %}
+                  {% endif %}
+                {% endfor %}
+              {% endif %}
+              {% if seen.matched and (seen.latest is none or (as_timestamp(now()) - seen.latest) >= limit) %}
+                {% set ns.items = ns.items + [state_attr(e, 'friendly_name') or e] %}
+              {% endif %}
+            {% endif %}
+          {% endfor %}
+        {% elif sensor_health_mode == 'legacy_last_reported' and limit > 0 %}
           {% for e in regular_windows %}
             {% if states(e) not in ['unknown', 'unavailable'] %}
               {% set obj = (expand(e) | list | first) | default(none) %}
               {% if obj is not none and obj.last_reported is defined %}
                 {% set age = as_timestamp(now()) - as_timestamp(obj.last_reported) %}
-                {% if age >= ((stale_minutes | int(0)) * 60) %}
+                {% if age >= limit %}
                   {% set ns.items = ns.items + [state_attr(e, 'friendly_name') or e] %}
                 {% endif %}
               {% endif %}
@@ -1027,7 +1110,7 @@ actions:
         {% endfor %}
         {% endif %}
         {% if critical_stale | length > 0 %}
-        ⚠️ Keine aktuelle Rückmeldung kritischer Sensoren:
+        ⚠️ Last-seen-Zeitstempel kritischer Sensoren zu alt/nicht verfügbar:
         {% for item in critical_stale %}• {{ item }}
         {% endfor %}
         {% endif %}
@@ -1042,7 +1125,7 @@ actions:
         Hinweis – Status regulärer Sensoren unbekannt/unavailable: {{ regular_unknown | join(', ') }}.
         {% endif %}
         {% if (regular_stale | length > 0) and not regular_alert %}
-        Hinweis – keine aktuelle Rückmeldung regulärer Sensoren: {{ regular_stale | join(', ') }}.
+        Hinweis – Last-seen-Zeitstempel regulärer Sensoren zu alt/nicht verfügbar: {{ regular_stale | join(', ') }}.
         {% endif %}
 
       regular_message: >-
@@ -1066,7 +1149,7 @@ actions:
         ⚠️ Status nicht verfügbar: {{ regular_unknown | join(', ') }}.
         {% endif %}
         {% if regular_stale | length > 0 %}
-        ⚠️ Keine aktuelle Rückmeldung: {{ regular_stale | join(', ') }}.
+        ⚠️ Last-seen-Zeitstempel zu alt/nicht verfügbar: {{ regular_stale | join(', ') }}.
         {% endif %}
 
       recommendation_message: >-
