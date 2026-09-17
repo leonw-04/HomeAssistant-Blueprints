@@ -771,7 +771,7 @@ actions:
            and ((regular_open | length) + (regular_unknown | length) + (regular_stale | length) == 0) }}
 
   - variables:
-      clearance_message: >-
+      clearance_message: |
         ✅ Entwarnung
 
         {% if critical_clearance_now %}
@@ -1087,7 +1087,7 @@ actions:
       clearance_title: "✅ Fenster-Entwarnung"
       data_problem_title: "Wetterdaten für Fensterwarnung unvollständig"
 
-      critical_message: >-
+      critical_message: |
         ⚠️ Wetterwarnung für kritische Fenster
 
         {% if critical_new_problem_event %}
@@ -1122,13 +1122,19 @@ actions:
         Die Warnstufe für reguläre Fenster ist derzeit noch nicht aktiv.
         {% endif %}
         {% if (regular_unknown | length > 0) and not regular_alert %}
-        Hinweis – Status regulärer Sensoren unbekannt/unavailable: {{ regular_unknown | join(', ') }}.
+        Hinweis – Status regulärer Sensoren unbekannt/unavailable:
+        {% for item in regular_unknown %}
+        • {{ item }}
+        {% endfor %}
         {% endif %}
         {% if (regular_stale | length > 0) and not regular_alert %}
-        Hinweis – Last-seen-Zeitstempel regulärer Sensoren zu alt/nicht verfügbar: {{ regular_stale | join(', ') }}.
+        Hinweis – Last-seen-Zeitstempel regulärer Sensoren zu alt/nicht verfügbar:
+        {% for item in regular_stale %}
+        • {{ item }}
+        {% endfor %}
         {% endif %}
 
-      regular_message: >-
+      regular_message: |
         🌧️ Warnstufe für reguläre Fenster erreicht
 
         {% if regular_new_problem_event %}
@@ -1146,13 +1152,19 @@ actions:
         {% endfor %}
         {% endif %}
         {% if regular_unknown | length > 0 %}
-        ⚠️ Status nicht verfügbar: {{ regular_unknown | join(', ') }}.
+        ⚠️ Status nicht verfügbar:
+        {% for item in regular_unknown %}
+        • {{ item }}
+        {% endfor %}
         {% endif %}
         {% if regular_stale | length > 0 %}
-        ⚠️ Last-seen-Zeitstempel zu alt/nicht verfügbar: {{ regular_stale | join(', ') }}.
+        ⚠️ Last-seen-Zeitstempel zu alt/nicht verfügbar:
+        {% for item in regular_stale %}
+        • {{ item }}
+        {% endfor %}
         {% endif %}
 
-      recommendation_message: >-
+      recommendation_message: |
         🌦️ Vorsorgliche Empfehlung
 
         {% if regular_new_problem_event and trigger_to_state == 'on' %}
@@ -1161,7 +1173,10 @@ actions:
         {% if regular_recommendation_due_to_critical %}
         Die kritische Wetterstufe ist bereits aktiv. Die Warnstufe für reguläre Fenster
         ist noch nicht aktiv; vorsorgliches Schließen wird empfohlen.
-        Kritische Auslöser: {{ critical_trigger_reasons | join('; ') }}.
+        Kritische Auslöser:
+        {% for reason in critical_trigger_reasons %}
+        • {{ reason }}
+        {% endfor %}
         {% else %}
         {% set metric_name = 'Regenwahrscheinlichkeit' if regular_threshold_type == 'probability' else 'Niederschlagsmenge' %}
         {% set unit = '%' if regular_threshold_type == 'probability' else precipitation_unit %}
@@ -1173,18 +1188,24 @@ actions:
         {% for item in regular_open %}• {{ item }}
         {% endfor %}
 
-      data_problem_message: >-
+      data_problem_message: |
         Wetterdaten für die Fensterprüfung sind unvollständig.
         Im Vorwarnzeitraum wurden Forecast-Einträge gefunden, aber der Wetteranbieter
         liefert den für die primäre Schwelle benötigten Wert nicht. Der fehlende Wert
         wird ausdrücklich nicht als 0 interpretiert.
         {% if critical_data_problem %}
         Kritische Fenster: Für die gewählte Schwellenart "{{ critical_threshold_type }}" fehlt der Wert.
-        Betroffen/offen/unklar: {{ (critical_open + critical_unknown + critical_stale) | join(', ') }}.
+        Betroffen/offen/unklar:
+        {% for item in (critical_open + critical_unknown + critical_stale) %}
+        • {{ item }}
+        {% endfor %}
         {% endif %}
         {% if regular_data_problem %}
         Reguläre Fenster: Für die gewählte Schwellenart "{{ regular_threshold_type }}" fehlt der Wert.
-        Betroffen/offen/unklar: {{ (regular_open + regular_unknown + regular_stale) | join(', ') }}.
+        Betroffen/offen/unklar:
+        {% for item in (regular_open + regular_unknown + regular_stale) %}
+        • {{ item }}
+        {% endfor %}
         {% endif %}
 
   - choose:
