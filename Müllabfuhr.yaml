@@ -445,7 +445,7 @@ action:
   # Resolve notification actions. The normal path derives the legacy
   # notify.mobile_app_* action from each selected Companion-App device.
   - variables:
-      notify_services_json: >-
+      notify_services: >-
         {% set override = notify_services_override | string | trim %}
         {% set ns = namespace(services=[]) %}
         {% if override != '' %}
@@ -467,7 +467,7 @@ action:
             {% endif %}
           {% endfor %}
         {% endif %}
-        {{ ns.services | unique | list | to_json }}
+        {{ ns.services | unique | list }}
 
       active_date: >-
         {% set value = states(helper_active_date_var) | trim %}
@@ -511,7 +511,7 @@ action:
               value: 0
 
           - repeat:
-              for_each: "{{ notify_services_json | from_json }}"
+              for_each: "{{ notify_services }}"
               sequence:
                 - continue_on_error: true
                   service: "{{ repeat.item }}"
@@ -534,7 +534,7 @@ action:
               timestamp: "{{ as_timestamp(now()) + (snooze_minutes | int(120) * 60) }}"
 
           - repeat:
-              for_each: "{{ notify_services_json | from_json }}"
+              for_each: "{{ notify_services }}"
               sequence:
                 - continue_on_error: true
                   service: "{{ repeat.item }}"
@@ -594,7 +594,7 @@ action:
                     value_template: "{{ active_date != '' }}"
                 sequence:
                   - repeat:
-                      for_each: "{{ notify_services_json | from_json }}"
+                      for_each: "{{ notify_services }}"
                       sequence:
                         - continue_on_error: true
                           service: "{{ repeat.item }}"
@@ -626,7 +626,7 @@ action:
                     value_template: "{{ active_date != '' }}"
                 sequence:
                   - repeat:
-                      for_each: "{{ notify_services_json | from_json }}"
+                      for_each: "{{ notify_services }}"
                       sequence:
                         - continue_on_error: true
                           service: "{{ repeat.item }}"
@@ -718,12 +718,12 @@ action:
     value_template: >-
       {{ (now_ts | float(0)) >= (effective_next_ts | float(0))
          and (effective_count | int(0)) < (max_notifications | int(6))
-         and (notify_services_json | from_json | count) > 0 }}
+         and (notify_services | count) > 0 }}
 
   # Send to every household phone. Same tag replaces the previous reminder.
   # Normal and escalation notifications have independently configurable delivery settings.
   - repeat:
-      for_each: "{{ notify_services_json | from_json }}"
+      for_each: "{{ notify_services }}"
       sequence:
         - choose:
             - conditions: "{{ escalated | bool }}"
