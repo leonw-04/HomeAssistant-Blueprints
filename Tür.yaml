@@ -1,62 +1,49 @@
 
 blueprint:
-  name: Nuki - Zwei Haustüren automatisch verriegeln
+  name: Smarte Schlösser - Nacht und Abwesenheit
   description: >
-    Verriegelt zwei Nuki-Schlösser nachts und nach längerer
-    Abwesenheit aller Bewohner. Beide Türkontakte werden
-    vor der Verriegelung geprüft. Keine automatische Entriegelung.
-    Bei offenen Türen oder fehlgeschlagener Verriegelung erfolgt
-    eine Benachrichtigung.
+    Verriegelt beliebig viele smarte Schlösser nachts und optional
+    bei Abwesenheit aller ausgewählten Personen. Optional können
+    Türkontakte überwacht werden. Wenn ein ausgewählter Kontakt
+    offen oder nicht verfügbar ist, wird kein Schloss verriegelt.
+    Es erfolgt niemals eine automatische Entriegelung.
   domain: automation
 
   input:
-    lock_1:
-      name: Nuki Schloss 1
+    locks:
+      name: Smarte Schlösser
+      description: Alle zu verriegelnden Schlösser auswählen
       selector:
         entity:
           filter:
             - domain: lock
+          multiple: true
 
-    contact_1:
-      name: Türkontakt 1
+    night_time:
+      name: Uhrzeit für Nachtverriegelung
+      default: "23:00:00"
       selector:
-        entity:
-          filter:
-            - domain: binary_sensor
-              device_class: door
+        time:
 
-    lock_2:
-      name: Nuki Schloss 2
+    enable_away:
+      name: Bei Abwesenheit verriegeln
+      description: Diese Funktion ist optional
+      default: false
       selector:
-        entity:
-          filter:
-            - domain: lock
-
-    contact_2:
-      name: Türkontakt 2
-      selector:
-        entity:
-          filter:
-            - domain: binary_sensor
-              device_class: door
+        boolean:
 
     persons:
-      name: Bewohner
-      description: Alle zu berücksichtigenden Personen
+      name: Personen für die Anwesenheit
+      description: Nur erforderlich, wenn Abwesenheit aktiviert ist
+      default: []
       selector:
         entity:
           filter:
             - domain: person
           multiple: true
 
-    night_time:
-      name: Nachtverriegelung
-      default: "23:00:00"
-      selector:
-        time:
-
     away_delay:
-      name: Wartezeit bei Abwesenheit
+      name: Abwesenheitsverzögerung
       default: 5
       selector:
         number:
@@ -64,24 +51,31 @@ blueprint:
           max: 60
           step: 1
           unit_of_measurement: Minuten
+          mode: slider
 
-    notification_service:
-      name: Benachrichtigungsdienst
-      description: Zum Beispiel notify.mobile_app_dein_smartphone
-      default: notify.notify
+    door_contacts:
+      name: Türkontakte (optional)
+      description: >
+        Alle überwachten Türkontakte auswählen. Verriegelt wird nur,
+        wenn alle ausgewählten Kontakte sicher geschlossen melden.
+        Ohne ausgewählte Kontakte erfolgt keine Türkontaktprüfung.
+      default: []
       selector:
-        text:
+        entity:
+          filter:
+            - domain: binary_sensor
+              device_class: door
+          multiple: true
 
 variables:
-  lock_1_entity: !input lock_1
-  contact_1_entity: !input contact_1
-  lock_2_entity: !input lock_2
-  contact_2_entity: !input contact_2
+  lock_entities: !input locks
   person_entities: !input persons
-  notify_service: !input notification_service
+  contact_entities: !input door_contacts
+  away_enabled: !input enable_away
 
 trigger_variables:
   tracked_persons: !input persons
+  away_enabled_trigger: !input enable_away
 
 triggers:
   - trigger: time
@@ -92,7 +86,8 @@ triggers:
     id: away
     value_template: >
       {% set people = expand(tracked_persons) %}
-      {{ people | length > 0
+      {{ away_enabled_trigger
+         and people | length > 0
          and (people
            | selectattr('state', 'in',
              ['home', 'unknown', 'unavailable'])
@@ -103,96 +98,80 @@ triggers:
 conditions:
   - condition: template
     value_template: >
-      {% set people = expand(person_entities) %}
       {{ trigger.id == 'night'
          or (
-           people | length > 0
-           and (people
+           away_enabled
+           and person_entities | length > 0
+           and (
+             expand(person_entities)
              | selectattr('state', 'in',
                ['home', 'unknown', 'unavailable'])
-             | list | length == 0)
+             | list | length == 0
+           )
          ) }}
 
 actions:
-  - alias: Haustür 1
+  - alias: Alle ausgewählten Türkontakte sicher prüfen
     choose:
       - conditions:
-          - condition: state
-            entity_id: !input contact_1
-            state: "off"
+          - condition: template
+            value_template: >
+              {{ contact_entities | length == 0
+                 or (
+                   expand(contact_entities)
+                   | selectattr('state', 'eq', 'off')
+                   | list | length == contact_entities | length
+                 ) }}
         sequence:
-          - if:
+          - alias: Alle Schlösser verriegeln
+            action: lock.lock
+            target:
+              entity_id: !input locks
+            continue_on_error: true
+
+          - delay: "00:00:10"
+
+          - alias: Prüfen, ob alle Schlösser verriegelt sind
+            if:
               - condition: template
                 value_template: >
-                  {{ not is_state(lock_1_entity, 'locked') }}
+                  {{ expand(lock_entities)
+                     | selectattr('state', 'eq', 'locked')
+                     | list | length != lock_entities | length }}
             then:
-              - action: lock.lock
-                target:
-                  entity_id: !input lock_1
+              - action: persistent_notification.create
+                data:
+                  title: "Sicherheit: Schloss nicht bestätigt"
+                  message: >
+                    Mindestens eines der ausgewählten Schlösser
+                    meldet nach dem Verriegelungsversuch nicht
+                    den Status „locked“. Bitte den Status aller
+                    Schlösser prüfen.
+
+              - action: notify.notify
                 continue_on_error: true
+                data:
+                  title: "Home Assistant: Schloss prüfen"
+                  message: >
+                    Mindestens ein Schloss konnte nicht als
+                    verriegelt bestätigt werden. Bitte prüfen.
 
-              - delay: "00:00:05"
-
-              - if:
-                  - condition: template
-                    value_template: >
-                      {{ not is_state(lock_1_entity, 'locked') }}
-                then:
-                  - action: "{{ notify_service }}"
-                    data:
-                      title: "Home Assistant - Haustür 1"
-                      message: >
-                        Verriegelung nicht bestätigt.
-                        Bitte Haustür und Nuki-Schloss prüfen.
-                    continue_on_error: true
     default:
-      - action: "{{ notify_service }}"
+      - action: persistent_notification.create
         data:
-          title: "Home Assistant - Haustür 1"
+          title: "Sicherheit: Tür nicht geschlossen"
           message: >
-            Tür offen oder Türkontakt nicht sicher geschlossen.
-            Es wurde kein Verriegelungsbefehl gesendet.
+            Mindestens ein ausgewählter Türkontakt meldet offen
+            oder einen unbekannten Zustand. Es wurden keine
+            Schlösser angesteuert. Bitte Türen und Kontakte prüfen.
+
+      - action: notify.notify
         continue_on_error: true
-
-  - alias: Haustür 2
-    choose:
-      - conditions:
-          - condition: state
-            entity_id: !input contact_2
-            state: "off"
-        sequence:
-          - if:
-              - condition: template
-                value_template: >
-                  {{ not is_state(lock_2_entity, 'locked') }}
-            then:
-              - action: lock.lock
-                target:
-                  entity_id: !input lock_2
-                continue_on_error: true
-
-              - delay: "00:00:05"
-
-              - if:
-                  - condition: template
-                    value_template: >
-                      {{ not is_state(lock_2_entity, 'locked') }}
-                then:
-                  - action: "{{ notify_service }}"
-                    data:
-                      title: "Home Assistant - Haustür 2"
-                      message: >
-                        Verriegelung nicht bestätigt.
-                        Bitte Haustür und Nuki-Schloss prüfen.
-                    continue_on_error: true
-    default:
-      - action: "{{ notify_service }}"
         data:
-          title: "Home Assistant - Haustür 2"
+          title: "Home Assistant: Tür offen"
           message: >
-            Tür offen oder Türkontakt nicht sicher geschlossen.
-            Es wurde kein Verriegelungsbefehl gesendet.
-        continue_on_error: true
+            Mindestens ein überwachter Türkontakt ist offen
+            oder nicht verfügbar. Es wurde kein Schloss angesteuert.
 
 mode: single
 max_exceeded: silent
