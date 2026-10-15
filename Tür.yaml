@@ -1,40 +1,117 @@
-
 blueprint:
-  name: Smarte Schlösser - Nacht und Abwesenheit
-  description: >
-    Verriegelt beliebig viele smarte Schlösser nachts und optional
-    bei Abwesenheit aller ausgewählten Personen. Optional können
-    Türkontakte überwacht werden. Wenn ein ausgewählter Kontakt
-    offen oder nicht verfügbar ist, wird kein Schloss verriegelt.
-    Es erfolgt niemals eine automatische Entriegelung.
+  name: Smarte Schlösser – Zeitplan, Wochenende und Feiertage
+  description: >-
+    Universeller Blueprint für beliebig viele smarte Schlösser. Verriegelt
+    zu unterschiedlichen Zeiten vor Arbeits- und freien Tagen sowie optional
+    bei Abwesenheit. Optionales morgendliches Entriegeln ist standardmäßig
+    deaktiviert. Wenn Türkontakte ausgewählt sind, müssen ALLE ausgewählten
+    Kontakte geschlossen sein, bevor verriegelt wird. Für Arbeits-/Feiertags-
+    Sensoren gilt: on = Arbeitstag, off = arbeitsfrei. Unbekannte Zustände
+    verhindern eine automatische morgendliche Entriegelung.
   domain: automation
+  author: OpenAI
+  homeassistant:
+    min_version: "2024.10.0"
 
   input:
     locks:
       name: Smarte Schlösser
-      description: Alle zu verriegelnden Schlösser auswählen
+      description: Alle Schlösser auswählen, die diese Automation steuern soll.
       selector:
         entity:
           filter:
             - domain: lock
           multiple: true
 
-    night_time:
-      name: Uhrzeit für Nachtverriegelung
-      default: "23:00:00"
+    contacts:
+      name: Türkontakte (optional)
+      description: >-
+        Optional alle zu überwachenden Türkontakte auswählen. Wenn mindestens
+        ein Kontakt ausgewählt ist, müssen alle Kontakte off (geschlossen)
+        melden. Ist ein Kontakt offen, unknown oder unavailable, wird kein
+        Schloss verriegelt.
+      default: []
+      selector:
+        entity:
+          filter:
+            - domain: binary_sensor
+              device_class: door
+          multiple: true
+
+    lock_workday:
+      name: Verriegeln vor einem Arbeitstag
+      description: Wird verwendet, wenn morgen ein Arbeitstag ist.
+      default: "22:30:00"
       selector:
         time:
 
+    lock_dayoff:
+      name: Verriegeln vor Wochenende oder Feiertag
+      description: Wird verwendet, wenn morgen arbeitsfrei ist.
+      default: "23:30:00"
+      selector:
+        time:
+
+    enable_morning_unlock:
+      name: Morgens automatisch entriegeln
+      description: >-
+        Sicherheitskritisch und standardmäßig deaktiviert. Entriegelt nur nach
+        bestätigtem Tagestyp. Optional kann zusätzlich Anwesenheit verlangt werden.
+      default: false
+      selector:
+        boolean:
+
+    unlock_workday:
+      name: Morgens entriegeln an Arbeitstagen
+      default: "06:30:00"
+      selector:
+        time:
+
+    unlock_dayoff:
+      name: Morgens entriegeln an Wochenenden oder Feiertagen
+      default: "08:30:00"
+      selector:
+        time:
+
+    today_workday_sensor:
+      name: Sensor – Ist heute ein Arbeitstag? (optional)
+      description: >-
+        Optional einen Binary Sensor auswählen. on = Arbeitstag, off = arbeitsfrei.
+        Beispielsweise muss ein Feiertags-/Kalendersensor dieses Verhalten haben.
+        Ohne Sensor werden nur Samstage und Sonntage als arbeitsfrei erkannt.
+        Höchstens einen Sensor auswählen.
+      default: []
+      selector:
+        entity:
+          filter:
+            - domain: binary_sensor
+          multiple: true
+
+    tomorrow_workday_sensor:
+      name: Sensor – Ist morgen ein Arbeitstag? (optional)
+      description: >-
+        Optional einen Binary Sensor auswählen. on = Arbeitstag, off = arbeitsfrei.
+        Dieser Sensor muss den morgigen Tag abbilden; ein üblicher Workday-Sensor
+        für heute ist dafür nicht automatisch geeignet. Ohne Sensor werden nur
+        Wochenenden als arbeitsfrei erkannt. Höchstens einen Sensor auswählen.
+      default: []
+      selector:
+        entity:
+          filter:
+            - domain: binary_sensor
+          multiple: true
+
     enable_away:
       name: Bei Abwesenheit verriegeln
-      description: Diese Funktion ist optional
       default: false
       selector:
         boolean:
 
     persons:
-      name: Personen für die Anwesenheit
-      description: Nur erforderlich, wenn Abwesenheit aktiviert ist
+      name: Bewohner für die Abwesenheit (optional)
+      description: >-
+        Alle relevanten Bewohner auswählen. Wird nur für Abwesenheitsverriegelung
+        und optional zur Absicherung der morgendlichen Entriegelung verwendet.
       default: []
       selector:
         entity:
@@ -53,25 +130,34 @@ blueprint:
           unit_of_measurement: Minuten
           mode: slider
 
-    door_contacts:
-      name: Türkontakte (optional)
-      description: >
-        Alle überwachten Türkontakte auswählen. Verriegelt wird nur,
-        wenn alle ausgewählten Kontakte sicher geschlossen melden.
-        Ohne ausgewählte Kontakte erfolgt keine Türkontaktprüfung.
-      default: []
+    require_home_for_unlock:
+      name: Morgens nur entriegeln, wenn jemand zu Hause ist
+      description: >-
+        Empfohlen. Wenn aktiviert, muss mindestens eine ausgewählte Person
+        den Status home haben. Dafür müssen Bewohner ausgewählt sein.
+      default: true
       selector:
-        entity:
-          filter:
-            - domain: binary_sensor
-              device_class: door
-          multiple: true
+        boolean:
+
+    notification_service:
+      name: Push-Benachrichtigungsdienst
+      description: >-
+        Zum Beispiel notify.mobile_app_dein_smartphone. notify.notify ist der
+        Standardwert und hängt von deiner Home-Assistant-Konfiguration ab.
+      default: notify.notify
+      selector:
+        text:
 
 variables:
   lock_entities: !input locks
+  contact_entities: !input contacts
   person_entities: !input persons
-  contact_entities: !input door_contacts
   away_enabled: !input enable_away
+  unlock_enabled: !input enable_morning_unlock
+  today_workday_sensors: !input today_workday_sensor
+  tomorrow_workday_sensors: !input tomorrow_workday_sensor
+  require_home_for_unlock: !input require_home_for_unlock
+  notify_service: !input notification_service
 
 trigger_variables:
   tracked_persons: !input persons
@@ -79,99 +165,212 @@ trigger_variables:
 
 triggers:
   - trigger: time
-    at: !input night_time
-    id: night
+    at: !input lock_workday
+    id: lock_workday
+
+  - trigger: time
+    at: !input lock_dayoff
+    id: lock_dayoff
+
+  - trigger: time
+    at: !input unlock_workday
+    id: unlock_workday
+
+  - trigger: time
+    at: !input unlock_dayoff
+    id: unlock_dayoff
 
   - trigger: template
     id: away
-    value_template: >
+    value_template: >-
       {% set people = expand(tracked_persons) %}
       {{ away_enabled_trigger
          and people | length > 0
-         and (people
-           | selectattr('state', 'in',
-             ['home', 'unknown', 'unavailable'])
-           | list | length == 0) }}
+         and (people | selectattr('state', 'eq', 'not_home') | list | length
+              == people | length) }}
     for:
       minutes: !input away_delay
 
-conditions:
-  - condition: template
-    value_template: >
-      {{ trigger.id == 'night'
-         or (
-           away_enabled
-           and person_entities | length > 0
-           and (
-             expand(person_entities)
-             | selectattr('state', 'in',
-               ['home', 'unknown', 'unavailable'])
-             | list | length == 0
-           )
-         ) }}
-
 actions:
-  - alias: Alle ausgewählten Türkontakte sicher prüfen
-    choose:
+  - variables:
+      today_sensor_known: >-
+        {{ now().weekday() in [5, 6]
+           or today_workday_sensors | length == 0
+           or (expand(today_workday_sensors)
+               | selectattr('state', 'in', ['on', 'off']) | list | length
+               == today_workday_sensors | length) }}
+      today_is_off: >-
+        {{ now().weekday() in [5, 6]
+           or (today_workday_sensors | length > 0
+               and (expand(today_workday_sensors)
+                    | selectattr('state', 'eq', 'off') | list | length > 0)) }}
+      tomorrow_is_off: >-
+        {{ (now().weekday() + 1) % 7 in [5, 6]
+           or (tomorrow_workday_sensors | length > 0
+               and (expand(tomorrow_workday_sensors)
+                    | selectattr('state', 'eq', 'off') | list | length > 0)) }}
+      someone_is_home: >-
+        {{ person_entities | length > 0
+           and (expand(person_entities)
+                | selectattr('state', 'eq', 'home') | list | length > 0) }}
+      unlock_presence_ok: >-
+        {{ (not require_home_for_unlock)
+           or (person_entities | length > 0
+               and (expand(person_entities)
+                    | selectattr('state', 'eq', 'home') | list | length > 0)) }}
+
+  - choose:
+      # Verriegelungsaktion: Arbeitstag-Zeit, Freier-Tag-Zeit oder Abwesenheit
       - conditions:
           - condition: template
-            value_template: >
-              {{ contact_entities | length == 0
-                 or (
-                   expand(contact_entities)
-                   | selectattr('state', 'eq', 'off')
-                   | list | length == contact_entities | length
-                 ) }}
+            value_template: >-
+              {{ (trigger.id == 'lock_workday' and not (tomorrow_is_off | bool))
+                 or (trigger.id == 'lock_dayoff' and (tomorrow_is_off | bool))
+                 or (trigger.id == 'away'
+                     and away_enabled
+                     and person_entities | length > 0
+                     and (expand(person_entities)
+                          | selectattr('state', 'eq', 'not_home') | list | length
+                          == person_entities | length)) }}
         sequence:
-          - alias: Alle Schlösser verriegeln
-            action: lock.lock
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: >-
+                      {{ contact_entities | length == 0
+                         or (expand(contact_entities)
+                             | selectattr('state', 'eq', 'off') | list | length
+                             == contact_entities | length) }}
+                sequence:
+                  - action: lock.lock
+                    target:
+                      entity_id: !input locks
+                    continue_on_error: true
+
+                  - delay: "00:00:10"
+
+                  - if:
+                      - condition: template
+                        value_template: >-
+                          {{ (expand(lock_entities)
+                              | selectattr('state', 'eq', 'locked') | list | length)
+                             != lock_entities | length }}
+                    then:
+                      - action: persistent_notification.create
+                        data:
+                          title: "Sicherheit: Schloss nicht bestätigt"
+                          message: >-
+                            Mindestens eines der ausgewählten Schlösser meldet
+                            nach dem Verriegelungsversuch nicht 'locked'. Bitte
+                            alle Schlosszustände und Türen prüfen.
+                      - action: "{{ notify_service }}"
+                        continue_on_error: true
+                        data:
+                          title: "Home Assistant: Schloss prüfen"
+                          message: >-
+                            Mindestens ein Schloss konnte nicht als verriegelt
+                            bestätigt werden. Bitte alle Schlösser prüfen.
+            default:
+              - action: persistent_notification.create
+                data:
+                  title: "Sicherheit: Tür nicht sicher geschlossen"
+                  message: >-
+                    Mindestens ein ausgewählter Türkontakt meldet nicht sicher
+                    geschlossen (offen, unknown oder unavailable). Es wurden
+                    keine Schlösser angesteuert.
+              - action: "{{ notify_service }}"
+                continue_on_error: true
+                data:
+                  title: "Home Assistant: Tür offen oder Kontakt gestört"
+                  message: >-
+                    Mindestens ein Türkontakt ist offen oder nicht verfügbar.
+                    Es wurden keine Schlösser angesteuert.
+
+      # Morgens entriegeln: nur wenn aktiviert, Tagestyp sicher ist und ggf. jemand da ist
+      - conditions:
+          - condition: template
+            value_template: >-
+              {{ unlock_enabled
+                 and (today_sensor_known | bool)
+                 and (unlock_presence_ok | bool)
+                 and ((trigger.id == 'unlock_workday' and not (today_is_off | bool))
+                      or (trigger.id == 'unlock_dayoff' and (today_is_off | bool))) }}
+        sequence:
+          - action: lock.unlock
             target:
               entity_id: !input locks
             continue_on_error: true
 
           - delay: "00:00:10"
 
-          - alias: Prüfen, ob alle Schlösser verriegelt sind
-            if:
+          - if:
               - condition: template
-                value_template: >
-                  {{ expand(lock_entities)
-                     | selectattr('state', 'eq', 'locked')
-                     | list | length != lock_entities | length }}
+                value_template: >-
+                  {{ (expand(lock_entities)
+                      | selectattr('state', 'eq', 'unlocked') | list | length)
+                     != lock_entities | length }}
             then:
               - action: persistent_notification.create
                 data:
-                  title: "Sicherheit: Schloss nicht bestätigt"
-                  message: >
-                    Mindestens eines der ausgewählten Schlösser
-                    meldet nach dem Verriegelungsversuch nicht
-                    den Status „locked“. Bitte den Status aller
-                    Schlösser prüfen.
-
-              - action: notify.notify
+                  title: "Sicherheit: Entriegelung nicht bestätigt"
+                  message: >-
+                    Mindestens eines der ausgewählten Schlösser meldet nach dem
+                    Entriegelungsversuch nicht 'unlocked'. Bitte Status prüfen.
+              - action: "{{ notify_service }}"
                 continue_on_error: true
                 data:
-                  title: "Home Assistant: Schloss prüfen"
-                  message: >
-                    Mindestens ein Schloss konnte nicht als
-                    verriegelt bestätigt werden. Bitte prüfen.
+                  title: "Home Assistant: Entriegelung prüfen"
+                  message: >-
+                    Mindestens ein Schloss konnte nicht als entriegelt bestätigt
+                    werden. Bitte alle Schlösser prüfen.
 
-    default:
-      - action: persistent_notification.create
-        data:
-          title: "Sicherheit: Tür nicht geschlossen"
-          message: >
-            Mindestens ein ausgewählter Türkontakt meldet offen
-            oder einen unbekannten Zustand. Es wurden keine
-            Schlösser angesteuert. Bitte Türen und Kontakte prüfen.
+      # Bei unklarem Tagessensor keine automatische Entriegelung
+      - conditions:
+          - condition: template
+            value_template: >-
+              {{ unlock_enabled
+                 and not (today_sensor_known | bool)
+                 and trigger.id == ('unlock_dayoff' if (today_is_off | bool) else 'unlock_workday') }}
+        sequence:
+          - action: persistent_notification.create
+            data:
+              title: "Sicherheit: Entriegelung übersprungen"
+              message: >-
+                Der Sensor für die Arbeitstags-/Feiertagserkennung ist unknown
+                oder unavailable. Die automatische morgendliche Entriegelung
+                wurde vorsichtshalber übersprungen.
+          - action: "{{ notify_service }}"
+            continue_on_error: true
+            data:
+              title: "Home Assistant: Entriegelung übersprungen"
+              message: >-
+                Der Tagessensor ist nicht verfügbar. Es wurde kein Schloss
+                entriegelt.
 
-      - action: notify.notify
-        continue_on_error: true
-        data:
-          title: "Home Assistant: Tür offen"
-          message: >
-            Mindestens ein überwachter Türkontakt ist offen
-            oder nicht verfügbar. Es wurde kein Schloss angesteuert.
+      # Anwesenheitsbedingung blockiert die Entriegelung
+      - conditions:
+          - condition: template
+            value_template: >-
+              {{ unlock_enabled
+                 and (today_sensor_known | bool)
+                 and require_home_for_unlock
+                 and not (someone_is_home | bool)
+                 and ((trigger.id == 'unlock_workday' and not (today_is_off | bool))
+                      or (trigger.id == 'unlock_dayoff' and (today_is_off | bool))) }}
+        sequence:
+          - action: persistent_notification.create
+            data:
+              title: "Sicherheit: Keine morgendliche Entriegelung"
+              message: >-
+                Die automatische Entriegelung wurde übersprungen, weil keine
+                ausgewählte Person sicher als zu Hause erkannt wird.
+          - action: "{{ notify_service }}"
+            continue_on_error: true
+            data:
+              title: "Home Assistant: Entriegelung übersprungen"
+              message: >-
+                Keine ausgewählte Person ist als zu Hause erkannt. Es wurde
+                kein Schloss entriegelt.
 
 mode: single
 max_exceeded: silent
