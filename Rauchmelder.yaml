@@ -1,0 +1,117 @@
+blueprint:
+  name: Rauchmelder – Alarm an alle weiterleiten und zurücksetzen
+  description: >-
+    Löst bei einem Rauchalarm alle ausgewählten Sirenen aus und speichert,
+    welcher Rauchmelder den Alarm ausgelöst hat. Der Alarm bleibt aktiv, bis
+    der ausgewählte input_boolean ausgeschaltet wird. Vor der Verwendung
+    müssen ein input_boolean und ein input_text als Helfer angelegt werden.
+    Der Bosch Smoke Detector 2 muss eine als Rauch klassifizierte
+    binary_sensor-Entität und für das ferngesteuerte Auslösen eine
+    siren-Entität bereitstellen.
+  domain: automation
+  author: OpenAI
+  homeassistant:
+    min_version: "2024.10.0"
+
+  input:
+    smoke_detectors:
+      name: Rauchmelder
+      description: Alle Rauchmelder auswählen, die den Alarm auslösen dürfen.
+      selector:
+        entity:
+          filter:
+            - domain: binary_sensor
+              device_class: smoke
+          multiple: true
+
+    alarm_outputs:
+      name: Alarm-Ausgänge
+      description: >-
+        Alle Sirenen auswählen, die bei Rauch ausgelöst und beim Zurücksetzen
+        ausgeschaltet werden sollen.
+      selector:
+        entity:
+          filter:
+            - domain: siren
+          multiple: true
+
+    alarm_control:
+      name: Alarmsteuerung (input_boolean)
+      description: >-
+        Dieser Helfer wird bei Rauch eingeschaltet. Zum Zurücksetzen den
+        Helfer in Home Assistant ausschalten.
+      selector:
+        entity:
+          filter:
+            - domain: input_boolean
+
+    triggered_by:
+      name: Letzter auslösender Rauchmelder (input_text)
+      description: >-
+        In diesen Helfer wird der Anzeigename des Rauchmelders geschrieben,
+        der zuletzt den Alarm ausgelöst hat.
+      selector:
+        entity:
+          filter:
+            - domain: input_text
+
+variables:
+  alarm_outputs: !input alarm_outputs
+
+triggers:
+  - trigger: state
+    entity_id: !input smoke_detectors
+    to: "on"
+    id: smoke_detected
+
+  - trigger: state
+    entity_id: !input alarm_control
+    to: "off"
+    id: alarm_reset
+
+actions:
+  - choose:
+      - conditions:
+          - condition: trigger
+            id: smoke_detected
+        sequence:
+          - action: input_boolean.turn_on
+            target:
+              entity_id: !input alarm_control
+
+          - action: input_text.set_value
+            target:
+              entity_id: !input triggered_by
+            data:
+              value: >-
+                {{ state_attr(trigger.entity_id, 'friendly_name')
+                   | default(trigger.entity_id, true) }}
+
+          - if:
+              - condition: template
+                value_template: "{{ alarm_outputs | length > 0 }}"
+            then:
+              - action: siren.turn_on
+                target:
+                  entity_id: !input alarm_outputs
+
+      - conditions:
+          - condition: trigger
+            id: alarm_reset
+        sequence:
+          - if:
+              - condition: template
+                value_template: "{{ alarm_outputs | length > 0 }}"
+            then:
+              - action: siren.turn_off
+                target:
+                  entity_id: !input alarm_outputs
+
+          - action: input_text.set_value
+            target:
+              entity_id: !input triggered_by
+            data:
+              value: ""
+
+mode: restart
+max_exceeded: silent
