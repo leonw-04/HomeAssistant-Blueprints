@@ -1,0 +1,202 @@
+blueprint:
+  name: Badezimmerlüftung – Feuchte, Außenluft und Präsenz
+  description: >-
+    Schaltet einen Badlüfter nur dann ein, wenn die Luftfeuchtigkeit erhöht ist
+    und niemand im Badezimmer erkannt wird. Optional kann die Außenluft
+    berücksichtigt werden: Gelüftet wird nur, wenn die Außenluft tatsächlich
+    trockener ist. Mit Innen- und Außentemperatur wird dafür die absolute
+    Feuchtigkeit verglichen; ohne Temperaturen wird die relative Feuchte
+    verglichen. Unklare oder nicht verfügbare Sensorzustände schalten den
+    Lüfter aus.
+  domain: automation
+  author: OpenAI
+  homeassistant:
+    min_version: "2024.10.0"
+
+  input:
+    fan:
+      name: Badezimmerlüfter
+      selector:
+        entity:
+          filter:
+            - domain: fan
+
+    humidity_sensor:
+      name: Luftfeuchtigkeit im Badezimmer
+      selector:
+        entity:
+          filter:
+            - domain: sensor
+              device_class: humidity
+
+    presence_sensor:
+      name: Präsenzsensor
+      description: >-
+        Muss on melden, wenn sich jemand im Badezimmer befindet, und off,
+        wenn das Badezimmer frei ist.
+      selector:
+        entity:
+          filter:
+            - domain: binary_sensor
+
+    humidity_start:
+      name: Einschaltfeuchte
+      description: Ab diesem Wert darf der Lüfter starten.
+      default: 65
+      selector:
+        number:
+          min: 40
+          max: 95
+          step: 1
+          unit_of_measurement: "%"
+          mode: slider
+
+    humidity_stop:
+      name: Ausschaltfeuchte
+      description: Unter diesem Wert wird der Lüfter ausgeschaltet.
+      default: 60
+      selector:
+        number:
+          min: 30
+          max: 90
+          step: 1
+          unit_of_measurement: "%"
+          mode: slider
+
+    outdoor_humidity_sensor:
+      name: Außenluftfeuchtigkeit (optional)
+      description: >-
+        Wenn ausgewählt, läuft der Lüfter nur, wenn die Außenluft trockener
+        ist als die Badezimmerluft.
+      default: ""
+      selector:
+        entity:
+          filter:
+            - domain: sensor
+              device_class: humidity
+
+    indoor_temperature_sensor:
+      name: Temperatur im Badezimmer (optional)
+      description: Für den Vergleich der absoluten Feuchtigkeit.
+      default: ""
+      selector:
+        entity:
+          filter:
+            - domain: sensor
+              device_class: temperature
+
+    outdoor_temperature_sensor:
+      name: Außentemperatur (optional)
+      description: Muss zusammen mit der Innentemperatur ausgewählt werden.
+      default: ""
+      selector:
+        entity:
+          filter:
+            - domain: sensor
+              device_class: temperature
+
+    minimum_humidity_difference:
+      name: Mindestabstand relative Feuchte
+      description: Wird verwendet, wenn keine beiden Temperatursensoren vorhanden sind.
+      default: 5
+      selector:
+        number:
+          min: 0
+          max: 30
+          step: 1
+          unit_of_measurement: "%"
+          mode: slider
+
+    minimum_absolute_difference:
+      name: Mindestabstand absolute Feuchtigkeit
+      description: >-
+        Mindestvorteil der Außenluft. Ein Wert von 1 g/m³ verhindert Lüften
+        bei nahezu gleich feuchter Außenluft.
+      default: 1
+      selector:
+        number:
+          min: 0
+          max: 10
+          step: 0.1
+          unit_of_measurement: g/m³
+          mode: slider
+
+variables:
+  fan_entity: !input fan
+  humidity_entity: !input humidity_sensor
+  presence_entity: !input presence_sensor
+  outdoor_humidity_entity: !input outdoor_humidity_sensor
+  indoor_temperature_entity: !input indoor_temperature_sensor
+  outdoor_temperature_entity: !input outdoor_temperature_sensor
+  humidity_start_value: !input humidity_start
+  humidity_stop_value: !input humidity_stop
+  minimum_humidity_difference_value: !input minimum_humidity_difference
+  minimum_absolute_difference_value: !input minimum_absolute_difference
+
+triggers:
+  - trigger: state
+    entity_id: !input humidity_sensor
+    id: humidity_changed
+
+  - trigger: state
+    entity_id: !input presence_sensor
+    id: presence_changed
+
+  - trigger: time_pattern
+    minutes: "/5"
+    id: periodic_check
+
+actions:
+  - variables:
+      humidity_valid: "{{ is_number(states(humidity_entity)) }}"
+      presence_clear: "{{ is_state(presence_entity, 'off') }}"
+      outdoor_humidity_valid: >-
+        {{ outdoor_humidity_entity == ''
+           or is_number(states(outdoor_humidity_entity)) }}
+      temperature_comparison_available: >-
+        {{ indoor_temperature_entity != ''
+           and outdoor_temperature_entity != ''
+           and is_number(states(indoor_temperature_entity))
+           and is_number(states(outdoor_temperature_entity)) }}
+      outside_is_drier: >-
+        {% set indoor_humidity = states(humidity_entity) | float(0) %}
+        {% set outdoor_humidity = states(outdoor_humidity_entity) | float(0) %}
+        {% if outdoor_humidity_entity == '' %}
+          true
+        {% elif temperature_comparison_available %}
+          {% set indoor_temperature = states(indoor_temperature_entity) | float(0) %}
+          {% set outdoor_temperature = states(outdoor_temperature_entity) | float(0) %}
+          {% set indoor_absolute = 6.112 * (2.71828 ** ((17.67 * indoor_temperature) / (indoor_temperature + 243.5))) * indoor_humidity * 2.1674 / (273.15 + indoor_temperature) %}
+          {% set outdoor_absolute = 6.112 * (2.71828 ** ((17.67 * outdoor_temperature) / (outdoor_temperature + 243.5))) * outdoor_humidity * 2.1674 / (273.15 + outdoor_temperature) %}
+          {{ outdoor_absolute < indoor_absolute - (minimum_absolute_difference_value | float) }}
+        {% else %}
+          {{ outdoor_humidity < indoor_humidity - (minimum_humidity_difference_value | float) }}
+        {% endif %}
+      humidity_high_enough: >-
+        {% set humidity = states(humidity_entity) | float(0) %}
+        {{ humidity >= (humidity_start_value | float)
+           or (is_state(fan_entity, 'on')
+               and humidity > (humidity_stop_value | float)) }}
+      should_run: >-
+        {{ humidity_valid
+           and presence_clear
+           and outdoor_humidity_valid
+           and (outside_is_drier | bool)
+           and (humidity_high_enough | bool) }}
+
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ should_run | bool }}"
+        sequence:
+          - action: fan.turn_on
+            target:
+              entity_id: !input fan
+
+    default:
+      - action: fan.turn_off
+        target:
+          entity_id: !input fan
+
+mode: restart
+max_exceeded: silent
