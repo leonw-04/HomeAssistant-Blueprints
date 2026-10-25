@@ -78,6 +78,55 @@ blueprint:
           unit_of_measurement: "%"
           mode: slider
 
+    maximum_runtime:
+      name: Maximale Laufzeit
+      description: >-
+        Sicherheitsbegrenzung pro Lüftungsvorgang. Empfohlen sind 20 bis
+        30 Minuten, wenn nur nach dem Duschen gelüftet werden soll.
+      default: 30
+      selector:
+        number:
+          min: 5
+          max: 180
+          step: 5
+          unit_of_measurement: Minuten
+          mode: slider
+
+    restart_lockout:
+      name: Sperrzeit nach maximaler Laufzeit
+      description: >-
+        Verhindert, dass der Lüfter bei noch leicht erhöhter Feuchtigkeit
+        unmittelbar erneut startet.
+      default: 360
+      selector:
+        number:
+          min: 0
+          max: 720
+          step: 5
+          unit_of_measurement: Minuten
+          mode: slider
+
+    enable_night_lock:
+      name: Nachtsperre aktivieren
+      description: >-
+        Schaltet den Lüfter während des eingestellten Zeitfensters aus und
+        verhindert einen Neustart. Zeitfenster über Mitternacht sind möglich.
+      default: false
+      selector:
+        boolean:
+
+    night_lock_start:
+      name: Beginn der Nachtsperre
+      default: "22:00:00"
+      selector:
+        time:
+
+    night_lock_end:
+      name: Ende der Nachtsperre
+      default: "06:00:00"
+      selector:
+        time:
+
     outdoor_humidity_sensor:
       name: Außenluftfeuchtigkeit (optional)
       description: >-
@@ -145,6 +194,11 @@ variables:
   outdoor_temperature_entity: !input outdoor_temperature_sensor
   humidity_start_value: !input humidity_start
   humidity_stop_value: !input humidity_stop
+  maximum_runtime_value: !input maximum_runtime
+  restart_lockout_value: !input restart_lockout
+  night_lock_enabled: !input enable_night_lock
+  night_lock_start_value: !input night_lock_start
+  night_lock_end_value: !input night_lock_end
   presence_clear_delay_value: !input presence_clear_delay
   minimum_humidity_difference_value: !input minimum_humidity_difference
   minimum_absolute_difference_value: !input minimum_absolute_difference
@@ -165,6 +219,16 @@ triggers:
 actions:
   - variables:
       humidity_valid: "{{ is_number(states(humidity_entity)) }}"
+      night_lock_active: >-
+        {% set start = today_at(night_lock_start_value) %}
+        {% set end = today_at(night_lock_end_value) %}
+        {% if not (night_lock_enabled | bool) or start == end %}
+          false
+        {% elif start < end %}
+          {{ start <= now() < end }}
+        {% else %}
+          {{ now() >= start or now() < end }}
+        {% endif %}
       presence_clear: >-
         {{ is_state(presence_entity, 'off')
            and (as_timestamp(now()) - as_timestamp(states[presence_entity].last_changed, 0))
@@ -198,12 +262,30 @@ actions:
                and humidity > (humidity_stop_value | float)) }}
       should_run: >-
         {{ humidity_valid
+           and not (night_lock_active | bool)
            and presence_clear
            and outdoor_humidity_valid
            and (outside_is_drier | bool)
+           and (
+             not is_state(fan_entity, 'off')
+             or (as_timestamp(now()) - as_timestamp(states[fan_entity].last_changed, 0))
+                >= (restart_lockout_value | float(0) * 60)
+           )
            and (humidity_high_enough | bool) }}
+      maximum_runtime_reached: >-
+        {{ is_state(fan_entity, 'on')
+           and (as_timestamp(now()) - as_timestamp(states[fan_entity].last_changed, 0))
+               >= (maximum_runtime_value | float(30) * 60) }}
 
   - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ maximum_runtime_reached | bool }}"
+        sequence:
+          - action: fan.turn_off
+            target:
+              entity_id: !input fan
+
       - conditions:
           - condition: template
             value_template: "{{ should_run | bool }}"
