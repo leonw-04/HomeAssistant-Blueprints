@@ -484,6 +484,11 @@ action:
       action_later: "{{ 'WASTE_' ~ (instance_slug | upper) ~ '_LATER_' ~ (active_date | replace('-', '')) }}"
       pressed_action: >-
         {{ trigger.event.data.action | default('') if trigger.id == 'mobile_action' else '' }}
+      event_notification_tag: >-
+        {{ trigger.event.data.tag | default('') | string | trim
+           if trigger.id == 'mobile_action' else '' }}
+      action_notification_tag: >-
+        {{ event_notification_tag if event_notification_tag != '' else active_tag }}
 
   # Handle actionable-notification responses first. One phone controls the whole household.
   - choose:
@@ -518,7 +523,7 @@ action:
                   data:
                     message: clear_notification
                     data:
-                      tag: "{{ active_tag }}"
+                      tag: "{{ action_notification_tag }}"
 
           - stop: "Müllabholtermin wurde als rausgestellt bestätigt."
 
@@ -541,7 +546,7 @@ action:
                   data:
                     message: clear_notification
                     data:
-                      tag: "{{ active_tag }}"
+                      tag: "{{ action_notification_tag }}"
 
           - stop: "Müllerinnerung wurde auf später gesetzt."
 
