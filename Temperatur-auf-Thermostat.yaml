@@ -1,10 +1,10 @@
 blueprint:
-  name: Temperatur an Thermostat übertragen v1.0
+  name: Temperatur an Thermostate übertragen v1.1
   description: >-
     Überträgt die Temperatur eines Sensors regelmäßig und bei Änderungen an
-    ein entferntes Thermostat. Die Übertragung ist an einen Heizungsstatus
-    gekoppelt und erfolgt nur, wenn sich der gerundete Wert vom aktuellen
-    Thermostatwert unterscheidet.
+    ein oder mehrere entfernte Thermostate. Die Übertragung ist an einen
+    Heizungsstatus gekoppelt und erfolgt nur, wenn sich der gerundete Wert
+    von mindestens einem aktuellen Thermostatwert unterscheidet.
   domain: automation
   author: OpenAI
   homeassistant:
@@ -20,10 +20,11 @@ blueprint:
             - domain: sensor
 
     thermostat_temperature:
-      name: Remote-Temperatur des Thermostats
-      description: Number-Entität, die die gemessene Raumtemperatur übernimmt.
+      name: Remote-Temperaturen der Thermostate
+      description: Number-Entitäten, die die gemessene Raumtemperatur übernehmen.
       selector:
         entity:
+          multiple: true
           filter:
             - domain: number
 
@@ -61,7 +62,7 @@ blueprint:
 
 variables:
   temperature_sensor_entity: !input temperature_sensor
-  thermostat_temperature_entity: !input thermostat_temperature
+  thermostat_temperature_entities: !input thermostat_temperature
   decimal_places_value: !input decimal_places
   update_interval_value: !input update_interval
 
@@ -92,10 +93,16 @@ actions:
 
   - condition: template
     value_template: >-
-      {{ is_number(states(temperature_sensor_entity))
-         and is_number(states(thermostat_temperature_entity))
-         and (rounded_temperature | float)
-             != (states(thermostat_temperature_entity) | float) }}
+      {% set needs_update = namespace(value=false) %}
+      {% if is_number(states(temperature_sensor_entity)) %}
+        {% for entity_id in thermostat_temperature_entities %}
+          {% if is_number(states(entity_id))
+                and (rounded_temperature | float) != (states(entity_id) | float) %}
+            {% set needs_update.value = true %}
+          {% endif %}
+        {% endfor %}
+      {% endif %}
+      {{ needs_update.value }}
 
   - action: number.set_value
     data:
