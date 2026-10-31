@@ -1,0 +1,103 @@
+blueprint:
+  name: Temperatur an Thermostat übertragen
+  description: >-
+    Überträgt die Temperatur eines Sensors regelmäßig und bei Änderungen an
+    ein entferntes Thermostat. Die Übertragung ist an einen Heizungsstatus
+    gekoppelt und erfolgt nur, wenn sich der gerundete Wert vom aktuellen
+    Thermostatwert unterscheidet.
+  domain: automation
+  author: OpenAI
+  homeassistant:
+    min_version: "2024.10.0"
+
+  input:
+    temperature_sensor:
+      name: Temperatursensor
+      description: Sensor, dessen Temperatur an das Thermostat übertragen wird.
+      selector:
+        entity:
+          filter:
+            - domain: sensor
+
+    thermostat_temperature:
+      name: Remote-Temperatur des Thermostats
+      description: Number-Entität, die die gemessene Raumtemperatur übernimmt.
+      selector:
+        entity:
+          filter:
+            - domain: number
+
+    heating_status:
+      name: Heizungsstatus
+      description: Nur wenn dieser input_boolean eingeschaltet ist, wird übertragen.
+      selector:
+        entity:
+          filter:
+            - domain: input_boolean
+
+    update_interval:
+      name: Prüfintervall
+      description: Zusätzlich zur Sensoränderung wird in diesem Abstand geprüft.
+      default: 5
+      selector:
+        number:
+          min: 1
+          max: 60
+          step: 1
+          unit_of_measurement: Minuten
+          mode: slider
+
+    decimal_places:
+      name: Nachkommastellen
+      description: Auf diese Anzahl Nachkommastellen wird die Temperatur gerundet.
+      default: 1
+      selector:
+        number:
+          min: 0
+          max: 3
+          step: 1
+          unit_of_measurement: Nachkommastellen
+          mode: slider
+
+variables:
+  temperature_sensor_entity: !input temperature_sensor
+  thermostat_temperature_entity: !input thermostat_temperature
+  decimal_places_value: !input decimal_places
+
+trigger_variables:
+  update_interval_value: !input update_interval
+
+triggers:
+  - trigger: state
+    entity_id: !input temperature_sensor
+    id: temperature_changed
+
+  - trigger: time_pattern
+    minutes: "/{{ update_interval_value }}"
+    id: periodic_check
+
+conditions:
+  - condition: state
+    entity_id: !input heating_status
+    state: "on"
+
+actions:
+  - variables:
+      rounded_temperature: >-
+        {{ states(temperature_sensor_entity) | float(0)
+           | round(decimal_places_value | int) }}
+
+  - condition: template
+    value_template: >-
+      {{ is_number(states(temperature_sensor_entity))
+         and is_number(states(thermostat_temperature_entity))
+         and (rounded_temperature | float)
+             != (states(thermostat_temperature_entity) | float) }}
+
+  - action: number.set_value
+    data:
+      value: "{{ rounded_temperature }}"
+    target:
+      entity_id: !input thermostat_temperature
+
+mode: single
