@@ -1,5 +1,5 @@
 blueprint:
-  name: Temperatur an Thermostat übertragen
+  name: Temperatur an Thermostat übertragen v1.0
   description: >-
     Überträgt die Temperatur eines Sensors regelmäßig und bei Änderungen an
     ein entferntes Thermostat. Die Übertragung ist an einen Heizungsstatus

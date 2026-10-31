@@ -1,5 +1,5 @@
 blueprint:
-  name: Badezimmerlüftung – Feuchte, Außenluft und Präsenz
+  name: Badezimmerlüftung – Feuchte, Außenluft und Präsenz v1.0
   description: >-
     Schaltet einen Badlüfter nur dann ein, wenn die Luftfeuchtigkeit erhöht ist
     oder schnell ansteigt und niemand im Badezimmer erkannt wird. Optional

@@ -1,5 +1,5 @@
 blueprint:
-  name: Rauchmelder – Alarm an alle weiterleiten und zurücksetzen
+  name: Rauchmelder – Alarm an alle weiterleiten und zurücksetzen v1.0
   description: >-
     Löst bei einem Rauchalarm alle ausgewählten Sirenen aus und speichert,
     welcher Rauchmelder den Alarm ausgelöst hat. Der Alarm bleibt aktiv, bis

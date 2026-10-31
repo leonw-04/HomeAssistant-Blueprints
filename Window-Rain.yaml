@@ -1,5 +1,5 @@
 blueprint:
-  name: "Wetterwarnung: offene / unerreichbare Fenster v0.8"
+  name: "Wetterwarnung: offene / unerreichbare Fenster v1.0"
   description: >-
     Prüft aktuellen Wetterzustand und stündlichen Wetter-Forecast und meldet offene
     oder nicht verlässlich rückmeldende Fenstersensoren. Es gibt zwei Fensterkategorien:

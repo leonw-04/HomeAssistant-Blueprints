@@ -1,5 +1,5 @@
 blueprint:
-  name: "Müllabfuhr – Haushalts-Erinnerung"
+  name: "Müllabfuhr – Haushalts-Erinnerung v1.0"
   description: >-
     Fasst mehrere Waste-Collection-Schedule-Sensoren pro Abholtag zusammen und
     erinnert alle ausgewählten Handys als gemeinsamen Haushalt. Unterstützt
