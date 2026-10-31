@@ -2,12 +2,12 @@ blueprint:
   name: Badezimmerlüftung – Feuchte, Außenluft und Präsenz
   description: >-
     Schaltet einen Badlüfter nur dann ein, wenn die Luftfeuchtigkeit erhöht ist
-    und niemand im Badezimmer erkannt wird. Optional kann die Außenluft
-    berücksichtigt werden: Gelüftet wird nur, wenn die Außenluft tatsächlich
-    trockener ist. Mit Innen- und Außentemperatur wird dafür die absolute
-    Feuchtigkeit verglichen; ohne Temperaturen wird die relative Feuchte
-    verglichen. Unklare oder nicht verfügbare Sensorzustände schalten den
-    Lüfter aus.
+    oder schnell ansteigt und niemand im Badezimmer erkannt wird. Optional
+    kann die Außenluft berücksichtigt werden: Gelüftet wird nur, wenn die
+    Außenluft tatsächlich trockener ist. Mit Innen- und Außentemperatur wird
+    dafür die absolute Feuchtigkeit verglichen; ohne Temperaturen wird die
+    relative Feuchte verglichen. Unklare oder nicht verfügbare Sensorzustände
+    schalten den Lüfter aus.
   domain: automation
   author: OpenAI
   homeassistant:
@@ -76,6 +76,21 @@ blueprint:
           max: 90
           step: 1
           unit_of_measurement: "%"
+          mode: slider
+
+    humidity_rise_rate:
+      name: Mindestanstieg der Luftfeuchtigkeit
+      description: >-
+        Der Lüfter darf zusätzlich starten, wenn die Luftfeuchtigkeit
+        mindestens so schnell steigt. Damit kann zum Beispiel Duschen
+        erkannt werden, bevor die Einschaltfeuchte erreicht ist.
+      default: 1
+      selector:
+        number:
+          min: 0.1
+          max: 10
+          step: 0.1
+          unit_of_measurement: "%/min"
           mode: slider
 
     maximum_runtime:
@@ -194,6 +209,7 @@ variables:
   outdoor_temperature_entity: !input outdoor_temperature_sensor
   humidity_start_value: !input humidity_start
   humidity_stop_value: !input humidity_stop
+  humidity_rise_rate_value: !input humidity_rise_rate
   maximum_runtime_value: !input maximum_runtime
   restart_lockout_value: !input restart_lockout
   night_lock_enabled: !input enable_night_lock
@@ -255,9 +271,35 @@ actions:
         {% else %}
           {{ outdoor_humidity < indoor_humidity - (minimum_humidity_difference_value | float) }}
         {% endif %}
+      humidity_rise_rate: >-
+        {% if trigger.id == 'humidity_changed'
+              and trigger.from_state is defined
+              and trigger.from_state is not none
+              and trigger.to_state is defined
+              and trigger.to_state is not none
+              and is_number(trigger.from_state.state)
+              and is_number(trigger.to_state.state) %}
+          {% set elapsed_seconds =
+             as_timestamp(trigger.to_state.last_changed, 0)
+             - as_timestamp(trigger.from_state.last_changed, 0) %}
+          {% if elapsed_seconds > 0 %}
+            {{ ((trigger.to_state.state | float)
+                - (trigger.from_state.state | float))
+                / (elapsed_seconds / 60) }}
+          {% else %}
+            0
+          {% endif %}
+        {% else %}
+          0
+        {% endif %}
+      humidity_rising_fast: >-
+        {{ (humidity_rise_rate | float(0))
+           >= (humidity_rise_rate_value | float) }}
       humidity_high_enough: >-
         {% set humidity = states(humidity_entity) | float(0) %}
         {{ humidity >= (humidity_start_value | float)
+           or ((humidity_rising_fast | bool)
+               and humidity >= (humidity_stop_value | float))
            or (is_state(fan_entity, 'on')
                and humidity > (humidity_stop_value | float)) }}
       should_run: >-
