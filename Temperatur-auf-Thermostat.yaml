@@ -63,8 +63,6 @@ variables:
   temperature_sensor_entity: !input temperature_sensor
   thermostat_temperature_entity: !input thermostat_temperature
   decimal_places_value: !input decimal_places
-
-trigger_variables:
   update_interval_value: !input update_interval
 
 triggers:
@@ -73,13 +71,18 @@ triggers:
     id: temperature_changed
 
   - trigger: time_pattern
-    minutes: "/{{ update_interval_value }}"
+    minutes: "/1"
     id: periodic_check
 
 conditions:
   - condition: state
     entity_id: !input heating_status
     state: "on"
+
+  - condition: template
+    value_template: >-
+      {{ trigger.id != 'periodic_check'
+         or (now().minute % (update_interval_value | int(1))) == 0 }}
 
 actions:
   - variables:
