@@ -1,10 +1,11 @@
 blueprint:
-  name: Temperatur an Thermostate übertragen v1.1
+  name: Temperatur an Thermostate übertragen v1.2
   description: >-
     Überträgt die Temperatur eines Sensors regelmäßig und bei Änderungen an
     ein oder mehrere entfernte Thermostate. Die Übertragung ist an einen
-    Heizungsstatus gekoppelt und erfolgt nur, wenn sich der gerundete Wert
-    von mindestens einem aktuellen Thermostatwert unterscheidet.
+    Heizungsstatus gekoppelt. Bei der regelmäßigen Prüfung wird der Wert
+    immer erneut gesetzt, damit Thermostate nicht auf ihre eigene Temperatur
+    zurückfallen.
   domain: automation
   author: OpenAI
   homeassistant:
@@ -93,16 +94,20 @@ actions:
 
   - condition: template
     value_template: >-
-      {% set needs_update = namespace(value=false) %}
-      {% if is_number(states(temperature_sensor_entity)) %}
+      {% if not is_number(states(temperature_sensor_entity)) %}
+        false
+      {% elif trigger.id == 'periodic_check' %}
+        true
+      {% else %}
+        {% set needs_update = namespace(value=false) %}
         {% for entity_id in thermostat_temperature_entities %}
           {% if is_number(states(entity_id))
                 and (rounded_temperature | float) != (states(entity_id) | float) %}
             {% set needs_update.value = true %}
           {% endif %}
         {% endfor %}
+        {{ needs_update.value }}
       {% endif %}
-      {{ needs_update.value }}
 
   - action: number.set_value
     data:
