@@ -1,5 +1,5 @@
 blueprint:
-  name: Temperatur an Thermostate übertragen v1.2
+  name: Temperatur an Thermostate übertragen v1.3
   description: >-
     Überträgt die Temperatur eines Sensors regelmäßig und bei Änderungen an
     ein oder mehrere entfernte Thermostate. Die Übertragung ist an einen
@@ -38,8 +38,8 @@ blueprint:
             - domain: input_boolean
 
     update_interval:
-      name: Prüfintervall
-      description: Zusätzlich zur Sensoränderung wird in diesem Abstand geprüft.
+      name: Erzwungenes Setzintervall
+      description: In diesem Abstand wird die Temperatur unabhängig vom aktuellen Thermostatwert erneut gesetzt.
       default: 5
       selector:
         number:
