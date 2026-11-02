@@ -1,10 +1,12 @@
 blueprint:
-  name: Rauchmelder – Alarm an alle weiterleiten und zurücksetzen v1.0
+  name: Rauchmelder – Alarm an alle weiterleiten und zurücksetzen v1.1
   description: >-
     Löst bei einem Rauchalarm alle ausgewählten Sirenen aus und speichert,
     welcher Rauchmelder den Alarm ausgelöst hat. Der Alarm bleibt aktiv, bis
     der ausgewählte input_boolean ausgeschaltet wird. Vor der Verwendung
     müssen ein input_boolean und ein input_text als Helfer angelegt werden.
+    Optional können ausgewählte Handys über die Home-Assistant-Companion-App
+    eine Push-Meldung beim Alarm und beim Zurücksetzen erhalten.
     Der Bosch Smoke Detector 2 muss eine als Rauch klassifizierte
     binary_sensor-Entität und für das ferngesteuerte Auslösen eine
     siren-Entität bereitstellen.
@@ -55,8 +57,23 @@ blueprint:
           filter:
             - domain: input_text
 
+    mobile_notify_entities:
+      name: Handy-Benachrichtigungen (optional)
+      description: >-
+        Notify-Entitäten der Home-Assistant-Companion-App auswählen. Diese
+        Handys erhalten beim Alarm und beim Zurücksetzen eine Push-Meldung.
+        Bei leerer Auswahl werden keine Handy-Meldungen gesendet.
+      default: []
+      selector:
+        entity:
+          multiple: true
+          filter:
+            - domain: notify
+              integration: mobile_app
+
 variables:
   alarm_outputs: !input alarm_outputs
+  mobile_notify_entities: !input mobile_notify_entities
 
 triggers:
   - trigger: state
@@ -95,6 +112,28 @@ actions:
                 target:
                   entity_id: !input alarm_outputs
 
+          - if:
+              - condition: template
+                value_template: "{{ mobile_notify_entities | length > 0 }}"
+            then:
+              - action: notify.send_message
+                target:
+                  entity_id: !input mobile_notify_entities
+                data:
+                  title: "🚨 Rauchalarm"
+                  message: >-
+                    Rauchalarm durch
+                    {{ state_attr(trigger.entity_id, 'friendly_name')
+                       | default(trigger.entity_id, true) }}.
+                    Bitte prüfen und den Alarm erst zurücksetzen, wenn die
+                    Ursache geklärt ist.
+                  data:
+                    ttl: 0
+                    priority: high
+                    channel: alarm
+                    importance: high
+                    sticky: true
+
       - conditions:
           - condition: trigger
             id: alarm_reset
@@ -112,6 +151,17 @@ actions:
               entity_id: !input triggered_by
             data:
               value: ""
+
+          - if:
+              - condition: template
+                value_template: "{{ mobile_notify_entities | length > 0 }}"
+            then:
+              - action: notify.send_message
+                target:
+                  entity_id: !input mobile_notify_entities
+                data:
+                  title: "✅ Rauchalarm zurückgesetzt"
+                  message: "Der Rauchalarm wurde zurückgesetzt."
 
 mode: restart
 max_exceeded: silent
