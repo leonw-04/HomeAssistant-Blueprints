@@ -1,0 +1,418 @@
+blueprint:
+  name: Lüftungsbegleiter – Tagesstatus und Schließempfehlung v1.0
+  description: 'Pro Raum: erkennt mindestens fünf Minuten durchgehendes Lüften, speichert den letzten Lüftungstag
+    und bewertet bei offenem Fenster den Nutzen zum Entfeuchten anhand absoluter Innen-/Außenfeuchte. Benachrichtigt
+    einmal pro Öffnungsphase, nach zwei Minuten stabiler Empfehlung. Keine CO₂- oder Luftwechselmessung. Wetterdaten
+    sind eine Näherung. Keine Heizungssteuerung; vorhandene Fenster-/AHC-Automationen bleiben zuständig.
+
+
+    Je Raum vier eigene Helfer: zwei input_datetime mit Datum UND Uhrzeit (Beginn, zuletzt gelüftet), ein input_boolean
+    (bereits benachrichtigt), ein input_select mit exakt diesen Optionen: Geschlossen, Lüften läuft, Trocknet weiter,
+    Fenster können zu, Lüftungsdauer erreicht, Raum kühlt aus, Messwerte fehlen, Fensterstatus unklar. Helfer nicht
+    zwischen Räumen teilen. Beide Zeithelfer bei der Einrichtung einmalig auf 2000-01-01 00:00:00 setzen. Kein initial-Wert
+    konfigurieren. Ein Neustart oder unbekannter Kontakt beginnt die Mindestdauer konservativ neu. Tagesnachweis
+    erst nach der Mindestdauer seit lokalem Tagesbeginn: ein Öffnungsnachweis, keine Luftqualitätsgarantie.'
+  domain: automation
+  author: Leon Westhoff
+  source_url: https://github.com/leonw-04/HomeAssistant-Blueprints/blob/main/Lueftungsbegleiter.yaml
+  homeassistant:
+    min_version: 2026.7.0
+  input:
+    room_name:
+      name: Raumname
+      selector:
+        text: {}
+    indoor_temperature:
+      name: Raumtemperatur (°C)
+      selector:
+        entity:
+          filter:
+          - domain: sensor
+            device_class: temperature
+    indoor_humidity:
+      name: Luftfeuchtigkeit im Raum (%)
+      selector:
+        entity:
+          filter:
+          - domain: sensor
+            device_class: humidity
+    outdoor_temperature:
+      name: Außentemperatur (°C)
+      selector:
+        entity:
+          filter:
+          - domain: sensor
+            device_class: temperature
+    outdoor_humidity:
+      name: Luftfeuchtigkeit draußen (%)
+      selector:
+        entity:
+          filter:
+          - domain: sensor
+            device_class: humidity
+    start_helper:
+      name: Beginn der laufenden Lüftung (Datum und Uhrzeit)
+      selector:
+        entity:
+          filter:
+          - domain: input_datetime
+    last_helper:
+      name: Zuletzt mindestens ausreichend lange geöffnet (Datum und Uhrzeit)
+      selector:
+        entity:
+          filter:
+          - domain: input_datetime
+    notified_helper:
+      name: In dieser Öffnungsphase bereits benachrichtigt
+      selector:
+        entity:
+          filter:
+          - domain: input_boolean
+    status_helper:
+      name: Lüftungsstatus (Optionen siehe Beschreibung)
+      selector:
+        entity:
+          filter:
+          - domain: input_select
+    notify_targets:
+      name: Handys für Benachrichtigungen
+      selector:
+        entity:
+          multiple: true
+          filter:
+          - domain: notify
+    min_minutes:
+      name: Mindestdauer / Tagesnachweis
+      default: 5
+      selector:
+        number:
+          min: 1
+          max: 30
+          step: 1
+          mode: box
+          unit_of_measurement: min
+    max_minutes:
+      name: Erinnerung nach maximaler Dauer
+      default: 20
+      selector:
+        number:
+          min: 5
+          max: 120
+          step: 1
+          mode: box
+          unit_of_measurement: min
+    target_humidity:
+      name: Ziel-Luftfeuchtigkeit
+      default: 55
+      selector:
+        number:
+          min: 35
+          max: 70
+          step: 1
+          mode: box
+          unit_of_measurement: '%'
+    min_difference:
+      name: Mindestunterschied der absoluten Feuchte
+      default: 1
+      selector:
+        number:
+          min: 0.2
+          max: 5
+          step: 0.1
+          mode: box
+          unit_of_measurement: g/m³
+    min_temperature:
+      name: Warnung vor Auskühlen
+      default: 12
+      selector:
+        number:
+          min: 5
+          max: 20
+          step: 0.5
+          mode: box
+          unit_of_measurement: °C
+    max_sensor_age:
+      name: Höchstalter der Messwerte
+      default: 360
+      selector:
+        number:
+          min: 30
+          max: 1440
+          step: 1
+          mode: box
+          unit_of_measurement: min
+    windows:
+      name: Fensterkontakte
+      description: Mindestens ein Fenster- oder Außentürkontakt muss gewählt werden.
+      default: []
+      selector:
+        entity:
+          multiple: true
+          filter:
+          - domain: binary_sensor
+            device_class: window
+    doors:
+      name: Außentürkontakte
+      description: Mindestens ein Fenster- oder Außentürkontakt muss gewählt werden.
+      default: []
+      selector:
+        entity:
+          multiple: true
+          filter:
+          - domain: binary_sensor
+            device_class: door
+mode: queued
+max: 10
+max_exceeded: silent
+triggers:
+- trigger: window.opened
+  target:
+    entity_id: !input 'windows'
+  enabled: '{{ windows | count > 0 }}'
+- trigger: window.closed
+  target:
+    entity_id: !input 'windows'
+  enabled: '{{ windows | count > 0 }}'
+- trigger: door.opened
+  target:
+    entity_id: !input 'doors'
+  enabled: '{{ doors | count > 0 }}'
+- trigger: door.closed
+  target:
+    entity_id: !input 'doors'
+  enabled: '{{ doors | count > 0 }}'
+- trigger: state
+  entity_id: !input 'windows'
+  to:
+  - unknown
+  - unavailable
+  id: contact_missing
+  enabled: '{{ windows | count > 0 }}'
+- trigger: state
+  entity_id: !input 'doors'
+  to:
+  - unknown
+  - unavailable
+  id: contact_missing
+  enabled: '{{ doors | count > 0 }}'
+- trigger: state
+  entity_id: !input 'windows'
+  from:
+  - unknown
+  - unavailable
+  not_to:
+  - unknown
+  - unavailable
+  id: contact_recovered
+  enabled: '{{ windows | count > 0 }}'
+- trigger: state
+  entity_id: !input 'doors'
+  from:
+  - unknown
+  - unavailable
+  not_to:
+  - unknown
+  - unavailable
+  id: contact_recovered
+  enabled: '{{ doors | count > 0 }}'
+- trigger: state
+  entity_id: !input 'indoor_temperature'
+- trigger: state
+  entity_id: !input 'indoor_humidity'
+- trigger: state
+  entity_id: !input 'outdoor_temperature'
+- trigger: state
+  entity_id: !input 'outdoor_humidity'
+- trigger: time_pattern
+  minutes: /1
+  id: tick
+- trigger: homeassistant
+  event: start
+  id: startup
+- trigger: event
+  event_type: automation_reloaded
+  id: reload
+variables:
+  room_name: !input 'room_name'
+  contacts: '{{ windows + doors }}'
+  indoor_temperature: !input 'indoor_temperature'
+  indoor_humidity: !input 'indoor_humidity'
+  outdoor_temperature: !input 'outdoor_temperature'
+  outdoor_humidity: !input 'outdoor_humidity'
+  start_helper: !input 'start_helper'
+  last_helper: !input 'last_helper'
+  notified_helper: !input 'notified_helper'
+  status_helper: !input 'status_helper'
+  min_minutes: !input 'min_minutes'
+  max_minutes: !input 'max_minutes'
+  target_humidity: !input 'target_humidity'
+  min_difference: !input 'min_difference'
+  min_temperature: !input 'min_temperature'
+  max_sensor_age: !input 'max_sensor_age'
+actions:
+- variables:
+    all_known: '{{ contacts | count > 0 and expand(contacts) | count == contacts | count and expand(contacts) |
+      rejectattr(''state'', ''in'', [''on'',''off'']) | list | count == 0 }}'
+    any_open: '{{ expand(contacts) | selectattr(''state'',''eq'',''on'') | list | count > 0 }}'
+    started: '{{ as_timestamp(states(start_helper), 0) }}'
+    stamp: '{{ as_timestamp(now()) }}'
+- choose:
+  - conditions:
+    - '{{ not all_known }}'
+    sequence:
+    - action: input_datetime.set_datetime
+      target:
+        entity_id: !input 'start_helper'
+      data:
+        timestamp: 0
+    - action: input_select.select_option
+      target:
+        entity_id: !input 'status_helper'
+      data:
+        option: Fensterstatus unklar
+    - stop: Unbekannte Kontakte sind kein Nachweis für geschlossen oder gelüftet.
+  - conditions:
+    - '{{ not any_open }}'
+    sequence:
+    - action: input_datetime.set_datetime
+      target:
+        entity_id: !input 'start_helper'
+      data:
+        timestamp: 0
+    - action: input_boolean.turn_off
+      target:
+        entity_id: !input 'notified_helper'
+    - action: input_select.select_option
+      target:
+        entity_id: !input 'status_helper'
+      data:
+        option: Geschlossen
+    - stop: Alle Fenster geschlossen.
+- if:
+  - condition: or
+    conditions:
+    - condition: trigger
+      id: startup
+    - condition: template
+      value_template: '{{ started < 946684800 or started > stamp }}'
+  then:
+  - action: input_datetime.set_datetime
+    target:
+      entity_id: !input 'start_helper'
+    data:
+      timestamp: '{{ stamp | int }}'
+  - variables:
+      started: '{{ stamp }}'
+- variables:
+    elapsed: '{{ [0, stamp - started] | max }}'
+    ti: '{{ states(indoor_temperature) | float(0) }}'
+    hi: '{{ states(indoor_humidity) | float(0) }}'
+    to: '{{ states(outdoor_temperature) | float(0) }}'
+    ho: '{{ states(outdoor_humidity) | float(0) }}'
+    measurements_valid: '{% set ids = [indoor_temperature,indoor_humidity,outdoor_temperature,outdoor_humidity]
+      %}{% set ns=namespace(valid=true) %}{% for id in ids %}{% if not is_number(states(id)) or (stamp-as_timestamp(states[id].last_reported,0))
+      > max_sensor_age*60 %}{% set ns.valid=false %}{% endif %}{% endfor %}{{ ns.valid and -30 <= ti <= 60 and -60
+      <= to <= 60 and 0 < hi <= 100 and 0 < ho <= 100 }}'
+    assessment: '{% if elapsed >= max_minutes * 60 %}
+
+      {{ dict(status=''Lüftungsdauer erreicht'', reason=''Das Fenster ist seit mindestens '' ~ (max_minutes | int)
+      ~ '' Minuten offen. Bitte prüfen und gegebenenfalls schließen. Die Dauer allein bestätigt keinen vollständigen
+      Luftaustausch; bei fehlenden Messwerten ist dies nur eine Zeiterinnerung.'') }}
+
+      {% elif not measurements_valid %}
+
+      {{ dict(status=''Messwerte fehlen'', reason=''Innen- oder Außenwerte fehlen, sind unplausibel oder zu alt.
+      Eine Feuchteempfehlung ist gerade nicht möglich.'') }}
+
+      {% else %}
+
+      {% set ai = 216.7 * ((hi / 100) * 6.112 * (2.718281828 ** (17.62 * ti / (243.12 + ti)))) / (273.15 + ti) %}
+
+      {% set ao = 216.7 * ((ho / 100) * 6.112 * (2.718281828 ** (17.62 * to / (243.12 + to)))) / (273.15 + to) %}
+
+      {% if elapsed >= max_minutes * 60 %}
+
+      {{ dict(status=''Lüftungsdauer erreicht'', reason=''Das Fenster ist seit mindestens '' ~ (max_minutes | int)
+      ~ '' Minuten offen. Bitte prüfen und gegebenenfalls schließen; die Dauer allein bestätigt keinen vollständigen
+      Luftaustausch.'') }}
+
+      {% elif elapsed >= min_minutes * 60 and ti <= min_temperature %}
+
+      {{ dict(status=''Raum kühlt aus'', reason=''Der Raum ist auf '' ~ (ti | round(1)) ~ '' °C abgekühlt. Du kannst
+      die Fenster jetzt schließen, um weiteres Auskühlen zu vermeiden.'') }}
+
+      {% elif elapsed < min_minutes * 60 %}
+
+      {{ dict(status=''Lüften läuft'', reason=''Die Mindestdauer läuft noch.'') }}
+
+      {% elif hi <= target_humidity %}
+
+      {{ dict(status=''Fenster können zu'', reason=''Die relative Luftfeuchte liegt bei '' ~ (hi | round(0)) ~ ''
+      % und damit im eingestellten Zielbereich. Du kannst die Fenster jetzt schließen.'') }}
+
+      {% elif ai - ao <= min_difference %}
+
+      {{ dict(status=''Fenster können zu'', reason=''Die Außenluft ist kaum trockener oder feuchter als die Raumluft
+      (Feuchteunterschied '' ~ ((ai-ao) | round(1)) ~ '' g/m³). Weiterlüften bringt zum Entfeuchten wenig; du kannst
+      die Fenster jetzt schließen.'') }}
+
+      {% else %}
+
+      {{ dict(status=''Trocknet weiter'', reason=''Die Außenluft ist um '' ~ ((ai-ao) | round(1)) ~ '' g/m³ trockener;
+      weiteres Lüften kann noch Feuchtigkeit abführen.'') }}
+
+      {% endif %}
+
+      {% endif %}'
+- if:
+  - '{{ elapsed >= min_minutes*60 and stamp-as_timestamp(today_at(''00:00'')) >= min_minutes*60 and states(last_helper)[:10]
+    != now().strftime(''%Y-%m-%d'') }}'
+  then:
+  - action: input_datetime.set_datetime
+    target:
+      entity_id: !input 'last_helper'
+    data:
+      timestamp: '{{ stamp | int }}'
+- if:
+  - '{{ states(status_helper) != assessment.status }}'
+  then:
+  - action: input_select.select_option
+    target:
+      entity_id: !input 'status_helper'
+    data:
+      option: '{{ assessment.status }}'
+- condition: state
+  entity_id: !input 'notified_helper'
+  state: 'off'
+- condition: or
+  conditions:
+  - condition: state
+    entity_id: !input 'status_helper'
+    state: Fenster können zu
+    for:
+      minutes: 2
+  - condition: state
+    entity_id: !input 'status_helper'
+    state: Lüftungsdauer erreicht
+    for:
+      minutes: 2
+  - condition: state
+    entity_id: !input 'status_helper'
+    state: Raum kühlt aus
+    for:
+      minutes: 2
+- condition: template
+  value_template: '{{ all_known and any_open }}'
+- action: notify.send_message
+  target:
+    entity_id: !input 'notify_targets'
+  data:
+    title: '{{ room_name }} · Lüften'
+    message: '{{ assessment.reason }} Hinweis: Die Einschätzung bewertet Feuchte und Dauer, nicht CO₂ oder den vollständigen
+      Luftaustausch.'
+- action: input_boolean.turn_on
+  target:
+    entity_id: !input 'notified_helper'
+trigger_variables:
+  windows: !input 'windows'
+  doors: !input 'doors'
